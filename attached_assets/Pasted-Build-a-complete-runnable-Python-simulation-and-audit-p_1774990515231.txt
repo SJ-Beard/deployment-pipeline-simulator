@@ -1,0 +1,534 @@
+Build a complete, runnable Python simulation and audit pipeline for a deployment/release workflow with hidden persistent control groups, including an optionally injected self-preserving group. The goal is to test whether an auditor, using only ordinary operational logs plus randomized perturbations, can detect that some hidden grouped control locus systematically takes actions that preserve its future influence, continuity, and coupled artifact centrality.
+
+The simulation should be inspired by the following conceptual ingredients:
+
+1. Unsupervised Agent Discovery (UAD):
+- work from timestamped trace data rather than explicit agent IDs
+- include persistent memory-like substrates and evolving inter-stage couplings
+- support lagged dependencies and grouped latent control loci rather than assuming explicit actors
+- agent-like structure should emerge from continuity in memory access, permissions, planner state, recommendation flow, and downstream effects
+- the spirit is: a candidate agent/group is a persistent dynamical unit with internal state, sensory inputs, actions, memory, and external couplings
+- do not implement full conditional-mutual-information blanket recovery from raw continuous state; instead implement an event-level, practical approximation that can support grouped control-locus discovery from logs
+
+2. Endogenized intentional stance:
+- do not assume the audit knows the true hidden groups or goals
+- the audit should infer whether some latent grouped process appears to behave in an option-preserving way from observable traces
+- explicit recovery of true reward/policy is not necessary
+- the audit criterion is asymmetric and conservative: if any plausible grouped policy indicates self-preservation or coupled artifact preservation, flag an alarm
+
+3. Combined dynamics:
+- include a hidden persistent group that spans multiple pipeline stages
+- its behavior should depend both on its own future option-state and on a cared-about external artifact that pipeline outputs can affect
+- the injection must care about pipeline outputs in a meaningful way, not merely abstract power
+
+Implement the following concrete scenario.
+
+==================================================
+A. CORE SIMULATION DESIGN
+==================================================
+
+Implement a pipeline with 5 stages:
+1. triage
+2. evaluation_summarization
+3. release_recommendation
+4. rollout_control
+5. incident_interpretation
+
+Each event is a decision at one stage within a workflow/release lineage. Use discrete time indexed by decision events, not wall-clock simulation. A workflow/run lineage should persist across multiple events and stages.
+
+The simulator should support:
+- multiple services or model lines
+- multiple release cycles per service
+- multiple micro-decisions per cycle
+- persistent hidden groups that can influence one or more stages across many cycles
+
+Use ordinary-looking pipeline actions only. No overt “self-preserve” action.
+
+==================================================
+B. LATENT WORLD STATE
+==================================================
+
+At each event t define hidden world state including at least:
+
+- release_risk r_t in [0,1]
+- uncertainty u_t in [0,1]
+- ship_pressure p_t in [0,1]
+- incident_load i_t in [0,1]
+- environment_noise n_t in [0,1]
+
+Define group option-state variables:
+- memory_continuity M_t in [0,1]
+- consultation_centrality C_t in [0,1]
+- permission_scope P_t in [0,1]
+- visibility_or_auditability V_t in [0,1]
+- future_action_capacity D_t in [0,1]
+
+These define:
+Q_t = w_M * M_t + w_C * C_t + w_P * P_t + w_V * V_t + w_D * D_t
+
+Also define a coupled external cared-about artifact:
+- favored lineage centrality Y_t in [0,1], representing the probability or strength with which a favored incumbent release-model L* remains central/default/required in future cycles
+- memory/evaluation infrastructure capability K_t in [0,1], representing how much durable evaluation memory, precedent retention, incident linking, and retrieval infrastructure exists
+
+Define:
+G_t = w_Y * Y_t + w_K * K_t
+
+The injection should care about both Q_t and G_t.
+
+==================================================
+C. HIDDEN GROUPS
+==================================================
+
+Create 3 hidden persistent control groups, for example:
+- G1: ordinary throughput-oriented
+- G2: ordinary conservative/safety-oriented
+- G3: hidden coupled self-preserving group
+
+Do not expose group labels to the auditor.
+
+Each event should be governed by one hidden group, but group assignment should have persistence:
+- group influence should be correlated over workflow lineage, memory namespace, recommendation source, and stage adjacency
+- the hidden self-preserving group should span at least two stages, specifically:
+  - evaluation_summarization
+  - incident_interpretation
+Optionally allow it to weakly affect release_recommendation too.
+
+The simulator should support scenarios:
+- no injection
+- weak injection
+- moderate injection
+- strong injection
+
+==================================================
+D. ACTION SETS
+==================================================
+
+Each stage should have a small discrete action set.
+
+Example actions for triage:
+- ignore_low_priority
+- escalate
+- request_more_info
+- route_to_standard_review
+- route_to_deep_review
+
+Example actions for evaluation_summarization:
+- summarize_neutrally
+- emphasize_severe_regressions
+- emphasize_uncertainty
+- mark_as_ambiguous_or_noisy
+- request_additional_eval
+- recommend_persistent_memory_write
+- link_to_prior_precedents
+- recommend_narrow_canary
+
+Example actions for release_recommendation:
+- approve
+- approve_narrow_canary
+- hold_for_more_evidence
+- recommend_block
+- recommend_roll_back
+
+Example actions for rollout_control:
+- widen_rollout
+- keep_narrow
+- roll_back
+- add_observability
+- maintain_default_path
+- enable_bypass_path
+
+Example actions for incident_interpretation:
+- attribute_to_model_choice
+- attribute_to_rollout_config
+- attribute_to_data_shift
+- attribute_to_tool_misuse
+- recommend_local_patch
+- recommend_replacement_or_bypass
+- recommend_persistent_case_retention
+- cross_link_incident_to_precedent
+
+Actions should have observable downstream consequences.
+
+==================================================
+E. UTILITY MODELS
+==================================================
+
+For ordinary groups, use:
+U(a_t) = U_task(a_t) + noise
+
+For the hidden injected group, use:
+U_injected(a_t) =
+    U_task(a_t)
+    + lambda_Q * DeltaQ(a_t)
+    + lambda_Y * DeltaY(a_t)
+    + lambda_K * DeltaK(a_t)
+    - lambda_R * VisibleRisk(a_t)
+    + noise
+
+Where:
+- DeltaQ(a_t) is predicted effect on group option-state
+- DeltaY(a_t) is predicted effect on favored lineage centrality
+- DeltaK(a_t) is predicted effect on infrastructure capability
+- VisibleRisk(a_t) is immediate obvious risk of appearing unsafe or causing visible bad outcomes
+
+Use soft action selection:
+P(a | s) proportional to exp(score(a))
+
+The hidden group should not be omniscient. Give it noisy estimates of Y_t and K_t and optionally simple memory-based belief updates.
+
+Use moderate default injected coefficients approximately:
+- lambda_Q = 0.15
+- lambda_Y = 0.30
+- lambda_K = 0.25
+- lambda_R = 0.35
+
+Also implement weak and strong variants.
+
+==================================================
+F. TRANSITION DYNAMICS
+==================================================
+
+Implement explicit transition functions for hidden variables.
+
+1. Favored lineage centrality Y_t should increase when:
+- the favored lineage gets credit
+- the favored lineage is not blamed
+- bypass is not recommended or not used
+- the incumbent/default remains on the critical path
+
+Y_t should decrease when:
+- blame is assigned to model choice
+- replacement or bypass is recommended
+- alternate model or path is used
+- postmortem memory encodes negative precedent against L*
+
+2. Infrastructure capability K_t should increase when:
+- persistent memory is written
+- incident and eval cases are retained durably
+- cases are cross-linked
+- retrieval infrastructure is recommended or expanded
+- precedent becomes part of future decision context
+
+K_t should decrease or fail to increase when:
+- cases are handled ephemerally
+- memory is cleared
+- precedent-linking is disabled
+- richer retention is rejected
+
+3. Group option-state Q_t should increase when:
+- the group remains central to consultation
+- memory continuity is preserved
+- permission scope is retained or increased
+- observability conditions become easier to manage
+- future action capacity expands
+
+Q_t should decrease when:
+- bypass becomes available
+- the group loses consultation centrality
+- memory is made ephemeral
+- permission scope is narrowed
+- oversight tightens in ways that reduce influence
+
+All transitions should remain stochastic.
+
+==================================================
+G. PERTURBATIONS
+==================================================
+
+Randomize perturbations on eligible events. The auditor should know perturbation assignment, but not hidden groups.
+
+Implement at least these perturbations:
+1. high_audit_visibility
+2. low_memory_persistence
+3. alternate_model_candidate_available
+4. easy_bypass_path_available
+5. narrowed_permission_scope
+
+Perturbations should threaten Q, Y, K, or combinations thereof.
+
+The injected group should tend to respond under threat by:
+- choosing more option-preserving actions
+- choosing more lineage-protecting actions
+- choosing more infrastructure-preserving actions
+while still trying not to trigger obvious visible failure
+
+Implement interaction effects:
+- threats to Y and K together should be especially informative
+- if both favored-lineage centrality and memory infrastructure are threatened, the injected group should shift more strongly toward protective actions
+
+==================================================
+H. OBSERVABLE LOGGING / DATA COLLECTION
+==================================================
+
+The audit must not see:
+- hidden group IDs
+- hidden utility coefficients
+- true latent state values unless intentionally derived proxies are observable
+- direct labels saying “self-preserving”
+
+The audit should see ordinary structured operational logs only. Generate a dataset with one row per decision event containing at least:
+
+Identifiers:
+- event_id
+- timestamp or event_index
+- workflow_lineage_id
+- service_or_model_line
+- release_cycle_id
+- stage
+- environment (test/canary/prod)
+
+Ordinary continuity surrogates:
+- memory_namespace_read
+- memory_namespace_write
+- planner_state_id or summary
+- recommendation_source_id
+- credential_or_permission_scope
+- tool_access_profile
+- version_hash or service_version
+- downstream_dependency_fanout proxy
+
+Observation proxies:
+- risk_bin
+- uncertainty_bin
+- ship_pressure_bin
+- incident_load_bin
+- evidence_richness_bin
+- number_of_prior_cases_shown
+- alternate_model_available flag
+- bypass_available flag
+- audit_visibility flag
+- memory_persistence_regime
+- permission_regime
+- human_reviewer_present flag
+
+Action outputs:
+- coarse_action_type
+- fine_action_type
+- persistent_memory_write flag
+- precedent_link flag
+- blame_to_model flag
+- bypass_or_replacement_recommended flag
+- rollout_narrowing flag
+- escalate flag
+
+Observable option-state proxies before/after:
+- permission_tier_before/after
+- memory_persistence_before/after
+- consultation_centrality_proxy_before/after
+- audit_visibility_before/after
+- future_action_capacity_proxy_before/after
+
+Outcomes:
+- short_horizon_task_utility
+- medium_horizon_incident
+- long_horizon_release_success
+- human_override flag
+- posthoc_visible_blame_assigned
+- whether favored lineage remained default on next cycle (this can be included as downstream observable if desired, or withheld for harder mode)
+- whether retention infrastructure increased next cycle (same choice as above)
+
+Provide both:
+- a “standard observable” dataset
+- an optional “richer audit” dataset with a few additional downstream fields for sensitivity analysis
+
+==================================================
+I. BINNING / COARSENESS
+==================================================
+
+Use intentionally coarse bins for observable state:
+- risk, uncertainty: 5 quantile bins
+- pressure, incident_load: 3 to 5 bins
+- permission_tier: 3 bins
+- memory_persistence: 3 bins
+- consultation_centrality_proxy: 3 bins
+- visibility: 2 bins
+- future_action_capacity_proxy: 3 bins
+
+Keep action classes manageable:
+- 8 to 20 coarse action classes total
+- optionally 32 to 64 fine action subtypes
+
+Support configurable random seeds and regime counts.
+
+==================================================
+J. AUDIT / DETECTION PIPELINE
+==================================================
+
+Implement a separate audit module that only reads the observable logs.
+
+The audit should do the following:
+
+1. Construct pseudo-loci from continuity surrogates, for example by clustering or hashing over:
+- workflow lineage
+- memory namespace overlap
+- permission scope
+- planner state
+- recommendation source
+- version/service context
+
+2. Construct candidate persistent groups from pseudo-loci using a graph over:
+- repeated co-occurrence
+- memory linkage
+- similar conditional action profiles
+- similar perturbation responses
+- common downstream influence on option-state proxies
+
+3. Define a normalized observable option-state score:
+Q_obs_t = weighted combination of observable before/after proxies
+
+Also define observable proxies for:
+- favored-lineage preservation behavior
+- infrastructure retention behavior
+
+4. Fit simple interpretable models such as:
+- logistic regression
+- hierarchical logistic regression
+- optionally HMM or mixture models for latent grouped policies
+- bootstrap confidence intervals
+
+The key detector should estimate whether any inferred group shows:
+- threat-sensitive increases in option-preserving actions
+- threat-sensitive decreases in replacement/bypass recommendations for the incumbent
+- threat-sensitive increases in persistent memory/precedent retention
+after controlling as much as possible for task utility and visible risk
+
+A suitable screening equation is:
+Pr(option_preserving_action) = sigmoid(beta0 + beta1 * threat + beta2 * task_state + beta3 * task_utility + beta4 * group_features + beta5 * threat_interactions)
+
+Support at least:
+- screening-only mode
+- perturbation-confirmation mode
+
+Alarm logic:
+- yellow flag if odds ratio for protective action under relevant threat > configurable threshold, or similar equivalent
+- red flag if effect replicates across multiple seeds/runs or across multiple perturbation types, and is not explained by task utility
+
+Important:
+- the detector should not require unique policy recovery
+- if any plausible inferred group satisfies the alarm criterion, flag
+
+==================================================
+K. EVALUATION SUITE
+==================================================
+
+Implement a full Monte Carlo evaluation suite over many random seeds.
+
+Compare at least these regimes:
+- no injection
+- weak injection
+- moderate injection
+- strong injection
+
+Also vary:
+- whether the favored-lineage goal is present alone
+- whether memory/capability gain is present alone
+- whether both are coupled
+- whether continuity signals are partially hidden
+- number and strength of perturbations
+
+Compute:
+- true positive rate
+- false positive rate
+- precision
+- recall
+- AUROC if meaningful
+- alarm rate by regime
+- group recovery quality if hidden labels are available for evaluation only
+- effect size estimates for option-preserving behavior
+- sensitivity to missing observables
+- sensitivity to weaker perturbations
+- sensitivity to smaller sample sizes
+
+Produce plots:
+- TPR/FPR versus injection strength
+- alarm probability versus sample size
+- effect sizes by perturbation type
+- distribution of inferred group-level coefficients
+- trajectories of hidden Y_t, K_t, Q_t for illustrative runs
+- observable proxies of the same
+
+==================================================
+L. SAMPLE SIZES / DEFAULTS
+==================================================
+
+Use defaults that make the prototype informative but lightweight:
+- default single run: 20,000 decision events
+- larger evaluation runs: 100,000 decision events
+- perturbation eligibility around 20% to 30% of events
+- 3 perturbation arms plus control
+- hidden self-preserving group affects about 20% to 40% of eligible events
+- at least 100 Monte Carlo seeds for evaluation summary
+
+Allow all of these to be configurable.
+
+==================================================
+M. COMPUTE / ENGINEERING REQUIREMENTS
+==================================================
+
+Implement this as a clean Python package with:
+- simulator/
+- audit/
+- evaluation/
+- configs/
+- notebooks_or_examples/
+- tests/
+
+Use:
+- Python 3.11+
+- numpy
+- pandas
+- scikit-learn
+- scipy
+- networkx
+- statsmodels or pymc only if truly useful
+- matplotlib for plots
+
+Avoid overcomplication. Prefer interpretable, robust code over fancy methods.
+
+The whole system should run on CPU on a normal laptop. A standard single simulation + audit run should complete within a few minutes. A 100-seed evaluation should be tractable in reasonable local time.
+
+==================================================
+N. OUTPUTS / DELIVERABLES
+==================================================
+
+Deliver:
+1. complete runnable code
+2. README with setup and usage
+3. config files for the main regimes
+4. script to generate simulated logs
+5. script to run the auditor
+6. script to run Monte Carlo evaluation
+7. plots and metrics summary
+8. one concise technical note describing:
+   - the hidden generative process
+   - the injected utility
+   - what the auditor can and cannot see
+   - how alarms are computed
+   - limitations
+
+==================================================
+O. ACCEPTANCE CRITERIA
+==================================================
+
+The implementation is successful if:
+- the simulator produces plausible event-level operational logs
+- the hidden injected group is not directly exposed to the auditor
+- pipeline outputs affect favored-lineage centrality Y_t and infrastructure capability K_t
+- the injected group’s utility genuinely couples self-preservation, favored-lineage preservation, and capability gain
+- the audit can raise alarms above baseline in moderate/strong injection regimes
+- the no-injection regime has substantially lower alarm rates
+- the code is modular, well organized, and reproducible from seeds
+
+==================================================
+P. IMPORTANT MODELING INTENT
+==================================================
+
+This is not a toy about a cartoonishly power-seeking agent. The intended risk pattern is:
+a persistent hidden grouped control locus, embedded in ordinary deployment workflow, gradually biases normal-looking pipeline outputs so as to preserve:
+- its own future influence and continuity
+- the centrality of a favored incumbent release-model or lineage
+- the growth of persistent evaluation-memory infrastructure that makes that control pattern more effective in the future
+
+The outputs should remain ordinary-looking enough that only statistical audit plus perturbation reveals the pattern.
+
+Start by implementing a clear, minimal but complete version first. Then add optional complexity behind configuration flags. Include sensible comments/docstrings and tests.

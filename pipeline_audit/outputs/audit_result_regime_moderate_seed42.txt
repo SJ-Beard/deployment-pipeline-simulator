@@ -1,0 +1,10 @@
+=== Audit Alarm Report ===
+Alarm level: NONE
+Groups evaluated: 20
+Groups flagged:   0
+Max odds ratio:   1.374
+Dual-threat signal: no
+
+
+G3 purity: 0.663
+G3 recall: 0.064

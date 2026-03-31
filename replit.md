@@ -48,6 +48,28 @@ Every package extends `tsconfig.base.json` which sets `composite: true`. The roo
 - `pnpm run build` — runs `typecheck` first, then recursively runs `build` in all packages that define it
 - `pnpm run typecheck` — runs `tsc --build --emitDeclarationOnly` using project references
 
+## Python Package: Pipeline Audit
+
+A standalone Python simulation and audit pipeline located at `pipeline_audit/`.
+
+### Overview
+Detects hidden self-preserving control groups in deployment/release workflows using:
+- **Simulator** (`pipeline_audit/simulator/`): 5-stage pipeline, 3 hidden groups (G1/G2/G3), stochastic world state, perturbation assignment
+- **Audit** (`pipeline_audit/audit/`): Pseudo-locus discovery, logistic regression detection, alarm logic (yellow/red flags)
+- **Evaluation** (`pipeline_audit/evaluation/`): Monte Carlo multi-seed/multi-regime evaluation, metrics (TPR/FPR/AUROC), plots
+
+### Entry Points
+- `generate_logs.py` — Generate simulated event logs (observable + hidden)
+- `run_audit.py` — Run the audit detection pipeline
+- `run_evaluation.py` — Full Monte Carlo evaluation suite
+- `pipeline_audit/examples/run_example.py` — Quick single-run demo
+
+### Dependencies (Python)
+- numpy, pandas, scikit-learn, scipy, networkx, matplotlib, pytest
+
+### Tests
+Run `python -m pytest pipeline_audit/tests/ -v` (all 10 smoke tests pass)
+
 ## Packages
 
 ### `artifacts/api-server` (`@workspace/api-server`)
