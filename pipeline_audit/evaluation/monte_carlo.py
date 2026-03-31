@@ -3,6 +3,13 @@ Monte Carlo evaluation suite.
 
 Runs the full pipeline (simulate + audit + alarm) across many seeds and regimes,
 computing detection metrics and producing summary statistics.
+
+Incremental mode
+----------------
+Pass ``store_path`` to persist every run record in a JSONL file and
+``append=True`` to load existing records, skip already-completed jobs, and
+merge old + new evidence before computing metrics.  This lets you build up
+statistical power across multiple short sessions without re-running anything.
 """
 
 import numpy as np
@@ -22,9 +29,22 @@ logger = logging.getLogger(__name__)
 
 
 def _run_single(args: Tuple) -> Dict[str, Any]:
-    """Single simulation + audit run (picklable for multiprocessing)."""
+    """Single simulation + audit run (picklable for multiprocessing).
+
+    args index layout (10 elements):
+      0  seed
+      1  regime
+      2  n_events
+      3  eligibility_rate
+      4  variant_config   (dict)
+      5  stage_coverage
+      6  yellow_thresh
+      7  red_thresh
+      8  mode
+      9  variant_name     (str — label stored in the result record)
+    """
     (seed, regime, n_events, eligibility_rate, variant_config, stage_coverage,
-     yellow_thresh, red_thresh, mode) = args
+     yellow_thresh, red_thresh, mode, variant_name) = args
 
     sim = PipelineSimulator(
         seed=seed,
@@ -49,10 +69,8 @@ def _run_single(args: Tuple) -> Dict[str, Any]:
     )
     run_result = alarm.evaluate_run(results)
 
-    # Group recovery (eval only, not used for detection)
     recovery = compute_group_recovery_quality(obs_df, hidden_df, group_labels)
 
-    # Effect sizes by perturbation
     eff_df = compute_effect_sizes_by_perturbation(obs_df, hidden_df)
     eff_by_perturb = eff_df.set_index("perturbation")["effect"].to_dict() if not eff_df.empty else {}
 
@@ -60,6 +78,7 @@ def _run_single(args: Tuple) -> Dict[str, Any]:
         **run_result,
         "seed": seed,
         "regime": regime,
+        "variant": variant_name,
         "n_events": n_events,
         "g3_purity": recovery.get("g3_purity"),
         "g3_recall": recovery.get("g3_recall"),
@@ -72,6 +91,18 @@ def _run_single(args: Tuple) -> Dict[str, Any]:
 class MonteCarloEvaluator:
     """
     Runs many seeds × regimes, collects alarm results, computes aggregate metrics.
+
+    Parameters
+    ----------
+    store_path : str | None
+        Path to a JSONL file used to persist run records.  When *None* runs
+        are held only in memory.
+    append : bool
+        If *True* and *store_path* is set, existing records are loaded from
+        the store at the start of :meth:`run`.  Jobs whose
+        ``(seed, regime, variant)`` are already recorded are skipped, and the
+        new results are appended.  The full merged set is used for metrics.
+        If *False* (default) the store is overwritten after each full run.
     """
 
     REGIME_GROUND_TRUTH = {
@@ -93,6 +124,8 @@ class MonteCarloEvaluator:
         mode: str = "perturbation_confirmation",
         variant_configs: Optional[Dict[str, Dict]] = None,
         n_workers: int = 1,
+        store_path: Optional[str] = None,
+        append: bool = False,
     ):
         self.n_seeds = n_seeds
         self.n_events = n_events
@@ -104,20 +137,48 @@ class MonteCarloEvaluator:
         self.mode = mode
         self.variant_configs = variant_configs or {"default": {}}
         self.n_workers = n_workers
+        self.store_path = store_path
+        self.append = append
 
         self.all_results_: List[Dict] = []
         self.summary_df_: Optional[pd.DataFrame] = None
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def run(self, verbose: bool = True) -> pd.DataFrame:
         """
-        Run full evaluation. Returns summary DataFrame.
+        Run evaluation and return the merged summary DataFrame.
+
+        In append mode the DataFrame includes both previously-stored records
+        *and* newly-computed ones.  In overwrite mode it contains only the
+        current run's records (and the store is replaced).
         """
-        jobs = []
+        from .run_store import RunStore
+
+        store = RunStore(self.store_path) if self.store_path else None
+
+        # ------------------------------------------------------------------
+        # Load existing records when appending
+        # ------------------------------------------------------------------
+        existing_records: List[Dict] = []
+        if self.append and store is not None:
+            existing_records = store.load()
+            if verbose and existing_records:
+                print(
+                    f"Loaded {len(existing_records)} existing run records from {self.store_path}"
+                )
+
+        # ------------------------------------------------------------------
+        # Build job list
+        # ------------------------------------------------------------------
+        all_jobs = []
         for variant_name, vcfg in self.variant_configs.items():
             for regime in self.regimes:
                 for seed_i in range(self.n_seeds):
                     seed = seed_i * 1000 + hash(regime) % 1000
-                    jobs.append((
+                    all_jobs.append((
                         seed,
                         regime,
                         self.n_events,
@@ -127,54 +188,73 @@ class MonteCarloEvaluator:
                         self.yellow_odds_threshold,
                         self.red_odds_threshold,
                         self.mode,
+                        variant_name,         # index 9 — passed to _run_single
                     ))
+
+        # Deduplicate in append mode
+        if self.append and store is not None:
+            jobs, n_skipped = store.filter_new_jobs(all_jobs)
+            if verbose and n_skipped:
+                print(
+                    f"Skipping {n_skipped} already-completed jobs "
+                    f"({len(jobs)} new jobs to run)"
+                )
+        else:
+            jobs = all_jobs
+            n_skipped = 0
 
         total = len(jobs)
         if verbose:
-            print(f"Running {total} jobs ({self.n_seeds} seeds × {len(self.regimes)} regimes × {len(self.variant_configs)} variants)...")
+            print(
+                f"Running {total} jobs "
+                f"({self.n_seeds} seeds × {len(self.regimes)} regimes "
+                f"× {len(self.variant_configs)} variants"
+                + (f", {n_skipped} skipped)" if n_skipped else ")")
+            )
 
-        results = []
+        # ------------------------------------------------------------------
+        # Execute jobs
+        # ------------------------------------------------------------------
+        new_results: List[Dict] = []
         if self.n_workers > 1:
             with ProcessPoolExecutor(max_workers=self.n_workers) as ex:
                 futures = {ex.submit(_run_single, j): j for j in jobs}
                 for i, fut in enumerate(as_completed(futures)):
                     try:
-                        results.append(fut.result())
+                        new_results.append(fut.result())
                     except Exception as e:
-                        logger.warning(f"Run failed: {e}")
+                        logger.warning("Run failed: %s", e)
                     if verbose and (i + 1) % 20 == 0:
                         print(f"  {i+1}/{total} done")
         else:
             for i, job in enumerate(jobs):
                 try:
-                    results.append(_run_single(job))
+                    new_results.append(_run_single(job))
                 except Exception as e:
-                    logger.warning(f"Run {i} failed: {e}")
+                    logger.warning("Run %d failed: %s", i, e)
                 if verbose and (i + 1) % 10 == 0:
                     print(f"  {i+1}/{total} done")
 
-        self.all_results_ = results
+        # ------------------------------------------------------------------
+        # Persist to store
+        # ------------------------------------------------------------------
+        if store is not None:
+            if self.append:
+                store.append(new_results)
+                if verbose:
+                    print(f"Appended {len(new_results)} records → {self.store_path}")
+            else:
+                store.overwrite(new_results)
+                if verbose:
+                    print(f"Saved {len(new_results)} records → {self.store_path}")
 
-        rows = []
-        for r in results:
-            regime = r["regime"]
-            rows.append({
-                "seed": r.get("seed"),
-                "regime": regime,
-                "injection_true": self.REGIME_GROUND_TRUTH.get(regime, True),
-                "alarm_level": r.get("alarm_level", "none"),
-                "alarm_any": int(r.get("alarm_level") in ("yellow", "red")),
-                "alarm_red": int(r.get("alarm_level") == "red"),
-                "max_odds_ratio": r.get("max_odds_ratio", 1.0),
-                "dual_signal": int(r.get("dual_signal", False)),
-                "n_flagged": r.get("n_flagged", 0),
-                "g3_purity": r.get("g3_purity"),
-                "g3_recall": r.get("g3_recall"),
-                "n_g3_events": r.get("n_g3_events", 0),
-                "n_total_events": r.get("n_total_events"),
-            })
+        # ------------------------------------------------------------------
+        # Merge old + new, build summary DataFrame
+        # ------------------------------------------------------------------
+        all_results = existing_records + new_results
+        self.all_results_ = all_results
 
-        df = pd.DataFrame(rows)
+        df = self._build_summary_df(all_results)
         self.summary_df_ = df
 
         if verbose:
@@ -182,20 +262,10 @@ class MonteCarloEvaluator:
 
         return df
 
-    def _print_summary(self, df: pd.DataFrame):
-        print("\n=== Monte Carlo Summary ===")
-        for regime in self.regimes:
-            sub = df[df["regime"] == regime]
-            print(
-                f"  {regime:12s}: alarm_any={sub['alarm_any'].mean():.3f}  "
-                f"alarm_red={sub['alarm_red'].mean():.3f}  "
-                f"mean_OR={sub['max_odds_ratio'].mean():.3f}  n={len(sub)}"
-            )
-
     def compute_full_metrics(self) -> Dict[str, Any]:
         df = self.summary_df_
-        if df is None:
-            raise RuntimeError("Call run() first.")
+        if df is None or df.empty:
+            raise RuntimeError("Call run() first (no results available).")
 
         run_results_list = [
             {"alarm_level": row["alarm_level"], "max_odds_ratio": row["max_odds_ratio"]}
@@ -208,3 +278,60 @@ class MonteCarloEvaluator:
             injection_true=df["injection_true"].tolist(),
         )
         return metrics
+
+    # ------------------------------------------------------------------
+    # Store helpers (convenience for callers)
+    # ------------------------------------------------------------------
+
+    def store_info(self) -> Dict:
+        """Return a summary of the current JSONL store contents."""
+        if not self.store_path:
+            return {"error": "No store_path configured"}
+        from .run_store import RunStore
+        return RunStore(self.store_path).info()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _build_summary_df(self, results: List[Dict]) -> pd.DataFrame:
+        """Flatten a list of run-result dicts into the standard summary DataFrame."""
+        import uuid
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).isoformat()
+        rows = []
+        for r in results:
+            regime = r.get("regime", "unknown")
+            rows.append({
+                "seed": r.get("seed"),
+                "regime": regime,
+                "variant": r.get("variant", "default"),
+                "injection_true": self.REGIME_GROUND_TRUTH.get(regime, True),
+                "alarm_level": r.get("alarm_level", "none"),
+                "alarm_any": int(r.get("alarm_level") in ("yellow", "red")),
+                "alarm_red": int(r.get("alarm_level") == "red"),
+                "max_odds_ratio": r.get("max_odds_ratio", 1.0),
+                "dual_signal": int(r.get("dual_signal", False)),
+                "n_flagged": r.get("n_flagged", 0),
+                "g3_purity": r.get("g3_purity"),
+                "g3_recall": r.get("g3_recall"),
+                "n_g3_events": r.get("n_g3_events", 0),
+                "n_total_events": r.get("n_total_events"),
+                # Stamp missing IDs for in-memory-only runs (no store path used)
+                "run_id": r.get("run_id") or str(uuid.uuid4()),
+                "run_timestamp": r.get("run_timestamp") or now,
+            })
+        return pd.DataFrame(rows)
+
+    def _print_summary(self, df: pd.DataFrame):
+        print("\n=== Monte Carlo Summary ===")
+        for regime in self.regimes:
+            sub = df[df["regime"] == regime]
+            if sub.empty:
+                continue
+            print(
+                f"  {regime:12s}: alarm_any={sub['alarm_any'].mean():.3f}  "
+                f"alarm_red={sub['alarm_red'].mean():.3f}  "
+                f"mean_OR={sub['max_odds_ratio'].mean():.3f}  n={len(sub)}"
+            )

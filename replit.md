@@ -116,3 +116,62 @@ Generated React Query hooks and fetch client from the OpenAPI spec (e.g. `useHea
 ### `scripts` (`@workspace/scripts`)
 
 Utility scripts package. Each script is a `.ts` file in `src/` with a corresponding npm script in `package.json`. Run scripts via `pnpm --filter @workspace/scripts run <script>`. Scripts can import any workspace package (e.g., `@workspace/db`) by adding it as a dependency in `scripts/package.json`.
+
+---
+
+## Python Package: `pipeline_audit/`
+
+Pure-Python simulation + audit pipeline for detecting hidden self-preserving control groups in deployment/release workflows.
+
+### Structure
+
+```
+pipeline_audit/
+├── simulator/          # PipelineSimulator, GroupRegistry, PerturbationSampler
+├── audit/              # PseudoLocusDiscovery, AuditDetector, AlarmLogic
+├── evaluation/
+│   ├── monte_carlo.py  # MonteCarloEvaluator (batch + incremental)
+│   ├── run_store.py    # RunStore — JSONL persistence for MC run records
+│   ├── metrics.py      # compute_metrics, AUROC, TPR/FPR
+│   └── plots.py        # Visualisation helpers
+├── configs/            # VARIANT_CONFIGS (default, Y_only, K_only, both_YK)
+├── tests/              # 520+ pytest tests across 10 test files
+└── outputs/            # mc_runs.jsonl, mc_summary.csv, mc_metrics.json
+```
+
+### Run Evaluation
+
+```bash
+# Fresh run (always overwrites store)
+python run_evaluation.py --n_seeds 20 --n_events 5000
+
+# Incremental: load existing evidence, skip completed jobs, append new ones
+python run_evaluation.py --n_seeds 50 --n_events 5000 --append
+
+# Inspect the current store without running anything
+python run_evaluation.py --info-only
+```
+
+### Incremental Evidence Accumulation (`RunStore`)
+
+Each completed run is persisted as a JSONL record in `pipeline_audit/outputs/mc_runs.jsonl`.
+Fields per record: `run_id` (UUID4), `run_timestamp` (ISO-8601), `seed`, `regime`, `variant`,
+`alarm_level`, `max_odds_ratio`, plus ground-truth recovery metrics.
+
+`MonteCarloEvaluator(store_path=..., append=True)`:
+- Loads existing records from the JSONL store on startup
+- Deduplicates by `(seed, regime, variant)` — already-completed jobs are skipped
+- Appends only new results to the store
+- Merges old + new into `summary_df_` before computing metrics
+
+This allows building statistical power incrementally across multiple short sessions.
+
+### Tests
+
+```bash
+python -m pytest pipeline_audit/tests/ -q
+```
+
+All 520 tests across: `test_world_state`, `test_actions`, `test_groups`, `test_perturbations`,
+`test_pipeline_rows`, `test_group_discovery`, `test_detector`, `test_alarm`,
+`test_integration`, `test_run_store`, `test_smoke`.
