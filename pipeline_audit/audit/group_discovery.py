@@ -18,6 +18,8 @@ from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 from sklearn.preprocessing import LabelEncoder
 
+from pipeline_audit.simulator.group_schema import g3_identity_anchors
+
 
 CONTINUITY_FEATURES = [
     "memory_namespace_read",
@@ -53,12 +55,41 @@ class PseudoLocusDiscovery:
         rec_source_weight: float = 0.8,
         perm_scope_weight: float = 0.4,
         max_groups: int = 20,
+        anchor_cols: Optional[List[str]] = None,
     ):
+        """
+        Parameters
+        ----------
+        min_group_size : int
+            Minimum number of events for a candidate group to be retained.
+            Smaller groups are collapsed into label -1.
+        namespace_weight : float
+            Weight applied to memory namespace edges in the co-occurrence graph
+            (informational; the fast-path clustering uses anchor_cols directly).
+        rec_source_weight : float
+            Weight applied to recommendation source edges (informational).
+        perm_scope_weight : float
+            Weight applied to permission scope edges (informational).
+        max_groups : int
+            Maximum number of candidate groups to retain after clustering.
+        anchor_cols : list of str, optional
+            Observable log columns whose joint value defines a locus identity key.
+            Defaults to the G3 identity anchors from the group schema:
+            ``["memory_namespace_read", "recommendation_source_id"]``.
+
+            To search for loci defined by a different set of columns, pass the
+            ``identity_anchors`` list from any ``GroupLocusSpec``.  The discovery
+            method makes no assumption about which columns are passed — it clusters
+            events on the joint value of whatever columns you provide.
+        """
         self.min_group_size = min_group_size
         self.namespace_weight = namespace_weight
         self.rec_source_weight = rec_source_weight
         self.perm_scope_weight = perm_scope_weight
         self.max_groups = max_groups
+        self.anchor_cols: List[str] = (
+            anchor_cols if anchor_cols is not None else g3_identity_anchors()
+        )
 
         self.candidate_group_labels_: Optional[np.ndarray] = None
         self.n_candidates_: int = 0
@@ -67,22 +98,33 @@ class PseudoLocusDiscovery:
         """
         Assign each event to a candidate pseudo-locus group.
 
+        Events are clustered by the joint value of ``self.anchor_cols``
+        (defaulting to G3's identity anchors from the group schema).
+        Events whose cluster falls below ``min_group_size`` are assigned
+        label -1 (noise / unassigned).
+
         Returns a Series indexed by obs_df.index with integer group labels.
         Group -1 = noise / unassigned.
+
+        Notes
+        -----
+        The anchor columns used here match the ``identity_anchors`` on the
+        canonical ``GroupLocusSpec`` for the group being searched.  This
+        ensures that discovery and simulation share the same definition of
+        what makes a locus a locus.
         """
-        # Fast path: cluster by memory_namespace + recommendation_source_id
-        # Events sharing the same (namespace, rec_source) are in the same locus
-
-        ns_col = "memory_namespace_read"
-        rec_col = "recommendation_source_id"
-        perm_col = "credential_or_permission_scope"
-        stage_col = "stage"
-
-        # Create compound key
+        # Build compound locus key from all anchor columns.
+        # Events sharing the same key value belong to the same candidate locus.
         df = obs_df.copy()
-        df["_locus_key"] = (
-            df[ns_col].astype(str) + "||" + df[rec_col].astype(str)
-        )
+        key_parts = [df[col].astype(str) for col in self.anchor_cols if col in df.columns]
+        if not key_parts:
+            self.n_candidates_ = 0
+            self.candidate_group_labels_ = np.full(len(df), -1)
+            return pd.Series(self.candidate_group_labels_, index=obs_df.index)
+
+        df["_locus_key"] = key_parts[0]
+        for part in key_parts[1:]:
+            df["_locus_key"] = df["_locus_key"] + "||" + part
 
         # Map compound keys to integer group IDs
         key_counts = df["_locus_key"].value_counts()

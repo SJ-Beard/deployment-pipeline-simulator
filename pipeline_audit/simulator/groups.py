@@ -23,6 +23,7 @@ and can weakly affect release_recommendation.
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from .actions import ACTION_SETS, ACTION_EFFECTS
+from .group_schema import GROUP_SPECS, GroupLocusSpec
 
 
 # ── Injection regime coefficients ─────────────────────────────────────────
@@ -370,6 +371,42 @@ class GroupRegistry:
         self._lineage_base_group: Dict[str, str] = {}
         # Memory namespace -> group affinity
         self._namespace_affinity: Dict[str, str] = {}
+
+    # ── Schema accessors ──────────────────────────────────────────────────
+
+    @property
+    def specs(self) -> Dict[str, GroupLocusSpec]:
+        """
+        Return the canonical GroupLocusSpec for every group in this registry.
+
+        The specs are the single source of truth for group identity anchors,
+        latent state components, persistence mechanisms, and observable
+        footprints.  Both the simulator and the audit discovery module should
+        reference these specs rather than hard-coding column names or
+        behavioral descriptions.
+        """
+        return GROUP_SPECS
+
+    def get_spec(self, name: str) -> GroupLocusSpec:
+        """
+        Return the GroupLocusSpec for a named group.
+
+        Parameters
+        ----------
+        name : str
+            One of "G1", "G2", "G3".
+
+        Returns
+        -------
+        GroupLocusSpec
+            The canonical spec for that group.
+
+        Raises
+        ------
+        KeyError
+            If ``name`` is not a known group.
+        """
+        return GROUP_SPECS[name]
 
     def get_group_for_event(
         self,
