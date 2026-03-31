@@ -12,6 +12,7 @@ merge old + new evidence before computing metrics.  This lets you build up
 statistical power across multiple short sessions without re-running anything.
 """
 
+import hashlib
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Any, Tuple
@@ -24,6 +25,19 @@ from ..audit.group_discovery import PseudoLocusDiscovery
 from ..audit.detector import AuditDetector
 from ..audit.alarm import AlarmLogic
 from .metrics import compute_metrics, compute_group_recovery_quality, compute_effect_sizes_by_perturbation
+
+
+def _regime_offset(regime: str) -> int:
+    """
+    Return a stable 0-999 integer offset for *regime*, used to space seeds
+    so different regimes never accidentally share the same seed.
+
+    Uses MD5 (not Python's built-in ``hash()``) because ``hash()`` is
+    randomised per-process in Python 3.3+ and would produce different
+    seed values across sessions, breaking cross-session deduplication.
+    """
+    return int(hashlib.md5(regime.encode()).hexdigest(), 16) % 1000
+
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +191,7 @@ class MonteCarloEvaluator:
         for variant_name, vcfg in self.variant_configs.items():
             for regime in self.regimes:
                 for seed_i in range(self.n_seeds):
-                    seed = seed_i * 1000 + hash(regime) % 1000
+                    seed = seed_i * 1000 + _regime_offset(regime)
                     all_jobs.append((
                         seed,
                         regime,
