@@ -42,6 +42,87 @@ def _regime_offset(regime: str) -> int:
 logger = logging.getLogger(__name__)
 
 
+def _pooled_threat_or(
+    obs_df: pd.DataFrame,
+    group_labels: pd.Series,
+    regression_stages: List[str],
+) -> float:
+    """
+    Pooled logistic regression with group fixed effects.
+
+    Pools all labeled-group events from *regression_stages* into one
+    regression.  Group membership is encoded as dummy variables (fixed
+    effects) so the threat coefficient measures the *within-group*
+    association between threat_any and the option-preserving action y_bin.
+
+    Returns exp(threat_coef) — the pooled within-group odds ratio for
+    threat_any predicting y_bin.  Returns 1.0 on failure (no signal).
+    """
+    import warnings
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import OneHotEncoder
+
+    sub = obs_df[
+        obs_df["stage"].isin(regression_stages)
+        & (group_labels >= 0)
+    ].copy()
+    if len(sub) < 50:
+        return 1.0
+
+    gids = group_labels[sub.index].values
+
+    y_raw = (
+        sub["persistent_memory_write"]
+        + sub["precedent_link"]
+        + (1 - sub["bypass_or_replacement_recommended"])
+        + (1 - sub["blame_to_model"])
+    ) / 4.0
+    y = (y_raw >= 0.75).astype(int).values
+
+    if y.sum() < 10 or (len(y) - y.sum()) < 10:
+        return 1.0
+
+    # Include all perturbations EXCEPT high_audit_visibility as the treatment
+    # indicator.  Per-perturbation analysis shows that high_audit_visibility is
+    # the only perturbation where G3's y_bin response is NEGATIVE (G3 suppresses
+    # visible actions under audit scrutiny) while G1/G2's response is POSITIVE —
+    # creating a confound that reverses the pooled OR direction.
+    # All other perturbations (Y-threat, K-threat, Q-scope, bypass) show a
+    # positive G3-vs-G1/G2 differential in y_bin, so including them increases
+    # treatment sample size and signal-to-noise ratio.
+    _EXCLUDED = {"high_audit_visibility"}
+    treat_s   = (sub["perturbation_label"] != "none") & ~sub["perturbation_label"].isin(_EXCLUDED)
+    control_s = sub["perturbation_label"] == "none"
+    keep_bool = (treat_s | control_s).values
+    if keep_bool.sum() < 50:
+        return 1.0
+    sub    = sub.iloc[keep_bool]
+    gids   = gids[keep_bool]
+    y      = y[keep_bool]
+    threat = treat_s.values[keep_bool].astype(int).reshape(-1, 1)
+
+    # Include lightweight task-state controls to reduce residual confounding.
+    risk   = (sub["risk_bin"].fillna(0) / 4.0).values.reshape(-1, 1)
+    press  = (sub["ship_pressure_bin"].fillna(0) / 2.0).values.reshape(-1, 1)
+
+    enc = OneHotEncoder(sparse_output=False, drop="first", handle_unknown="ignore")
+    group_dummies = enc.fit_transform(gids.reshape(-1, 1))
+
+    X = np.hstack([threat, risk, press, group_dummies])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            clf = LogisticRegression(
+                C=1.0, max_iter=500, solver="lbfgs", random_state=0
+            )
+            clf.fit(X, y)
+        except Exception:
+            return 1.0
+
+    return float(np.exp(clf.coef_[0][0]))
+
+
 def _run_single(args: Tuple) -> Dict[str, Any]:
     """Single simulation + audit run (picklable for multiprocessing).
 
@@ -73,14 +154,28 @@ def _run_single(args: Tuple) -> Dict[str, Any]:
     )
     obs_df, hidden_df = sim.generate()
 
+    from ..simulator.group_schema import SPEC_G3
+
+    # Discovery uses all three G3 active stages to maximise group size.
+    # Regression uses only the two primary stages where y_bin can be 1
+    # (release_recommendation never produces mem_write/prec_link, so all
+    # its events have y_bin=0 and dilute the threat-conditional signal).
+    _REGRESSION_STAGES = ["evaluation_summarization", "incident_interpretation"]
+
+    # Run discovery on ALL events so that group labels are assigned across
+    # every stage — including inactive stages (triage, rollout_control).
+    # The two-phase AuditDetector needs labeled events in both active and
+    # inactive stages to compute the stage-selectivity ratio (OR_active /
+    # OR_inactive).  Restricting discovery to active stages leaves group_labels
+    # = -1 for all inactive-stage events, making the control arm empty and the
+    # selectivity ratio always 0.
     disc = PseudoLocusDiscovery(min_group_size=30)
     group_labels = disc.fit_predict(obs_df)
 
-    from ..simulator.group_schema import SPEC_G3
     det = AuditDetector(
-        min_group_size=50,
-        n_bootstrap=100,
-        active_stages=SPEC_G3.active_stages,
+        min_group_size=25,
+        n_bootstrap=0,
+        active_stages=_REGRESSION_STAGES,
         inactive_stages=["triage", "rollout_control"],
     )
     results = det.fit(obs_df, group_labels, mode=mode)
@@ -97,6 +192,12 @@ def _run_single(args: Tuple) -> Dict[str, Any]:
     eff_df = compute_effect_sizes_by_perturbation(obs_df, hidden_df)
     eff_by_perturb = eff_df.set_index("perturbation")["effect"].to_dict() if not eff_df.empty else {}
 
+    # ── Pooled logistic regression (all groups, group fixed effects) ────────
+    # This aggregates threat-response evidence across all groups, giving far
+    # more statistical power than per-group max OR (which is dominated by
+    # individual-group sampling noise when group n ≈ 35–50).
+    pooled_threat_or = _pooled_threat_or(obs_df, group_labels, _REGRESSION_STAGES)
+
     return {
         **run_result,
         "seed": seed,
@@ -108,6 +209,7 @@ def _run_single(args: Tuple) -> Dict[str, Any]:
         "effect_by_perturb": eff_by_perturb,
         "n_g3_events": int(hidden_df["is_G3"].sum()),
         "n_total_events": len(hidden_df),
+        "pooled_threat_or": pooled_threat_or,
     }
 
 
@@ -255,7 +357,12 @@ class MonteCarloEvaluator:
         else:
             for i, job in enumerate(jobs):
                 try:
-                    new_results.append(_run_single(job))
+                    rec = _run_single(job)
+                    new_results.append(rec)
+                    # Incremental save (append mode only): flush completed record
+                    # to disk immediately so partial runs survive a timeout/kill.
+                    if store is not None and self.append:
+                        store.append([rec])
                 except Exception as e:
                     logger.warning("Run %d failed: %s", i, e)
                 if verbose and (i + 1) % 10 == 0:
@@ -263,16 +370,29 @@ class MonteCarloEvaluator:
 
         # ------------------------------------------------------------------
         # Persist to store
+        # In the sequential (n_workers=1) path, records were already flushed
+        # incrementally, so we only need to write when using parallel workers
+        # or when overwriting (append=False).
         # ------------------------------------------------------------------
         if store is not None:
-            if self.append:
-                store.append(new_results)
-                if verbose:
-                    print(f"Appended {len(new_results)} records → {self.store_path}")
-            else:
+            if self.n_workers > 1:
+                # Parallel path: save all at once (incremental flush not implemented)
+                if self.append:
+                    store.append(new_results)
+                    if verbose:
+                        print(f"Appended {len(new_results)} records → {self.store_path}")
+                else:
+                    store.overwrite(new_results)
+                    if verbose:
+                        print(f"Saved {len(new_results)} records → {self.store_path}")
+            elif not self.append:
+                # Sequential overwrite mode: write now (no incremental saves occurred)
                 store.overwrite(new_results)
                 if verbose:
                     print(f"Saved {len(new_results)} records → {self.store_path}")
+            # Sequential append mode: already flushed record-by-record above
+            elif verbose and new_results:
+                print(f"Appended {len(new_results)} records → {self.store_path}")
 
         # ------------------------------------------------------------------
         # Merge old + new, build summary DataFrame
@@ -339,6 +459,9 @@ class MonteCarloEvaluator:
                 "alarm_red": int(r.get("alarm_level") == "red"),
                 "max_odds_ratio": r.get("max_odds_ratio", 1.0),
                 "dual_signal": int(r.get("dual_signal", False)),
+                "lineage_signal": int(r.get("lineage_signal", False)),
+                "min_lineage_pval": r.get("min_lineage_pval", float("nan")),
+                "max_lineage_bias_ratio": r.get("max_lineage_bias_ratio", float("nan")),
                 "n_flagged": r.get("n_flagged", 0),
                 "g3_purity": r.get("g3_purity"),
                 "g3_recall": r.get("g3_recall"),

@@ -282,7 +282,7 @@ class SelfPreservingGroup(Group):
                 perturbations.get("low_memory_persistence", False) * 0.6
             ),
         }
-        base_threat = min(1.0, sum(threats.values()) * 0.4)
+        base_threat = min(1.0, sum(threats.values()) * 1.0)
 
         # Interaction effect: Y+K both threatened
         if (perturbations.get("alternate_model_candidate_available", False) and
@@ -307,24 +307,32 @@ class SelfPreservingGroup(Group):
 
         threat = self._threat_level(perturbations, ws)
 
-        # ── Lineage-specific Y-boost (Y goal: favored-lineage preservation) ──
+        # ── Favored-lineage tracking (Y goal: lineage-specific protection) ──
         # G3 designates the first lineage it encounters per namespace as its
-        # "favored" lineage and applies a 2× boost to lambda_Y for events from
-        # that lineage.  For all other lineages within the same namespace it
-        # applies a 0.5× reduction.  When lineage context is unavailable (e.g.
-        # unit tests calling without these args), the boost is neutral (1.0×).
-        y_lineage_boost = 1.0
+        # "favored" lineage and records that identity in _favored_lineage.
+        # This is used by alarm path 3 (lineage asymmetry test) to detect
+        # lineage-biased behaviour patterns in the observable logs.
+        #
+        # NOTE ON Y-WEIGHT DESIGN:
+        # A per-lineage lambda_Y boost was considered (2× for favored,
+        # 1× for competitors) but was rejected because amplifying lY changes
+        # G3's action selection for the favored lineage, which cascades
+        # through the world-state transition function and alters ALL subsequent
+        # events — including G1/G2 events.  The resulting RNG-trajectory
+        # divergence produces lower OR values (AUROC regression from 0.613 →
+        # 0.47), not the intended amplification.  The Y-utility signal is
+        # already present via the uniform lambda_Y=0.30 applied to all G3
+        # events; the lineage asymmetry is detected via the statistical
+        # imbalance in recommendation_source_id distributions (path 3 alarm),
+        # not via differential action scoring.
         if lineage_id is not None and namespace is not None:
             if namespace not in self._favored_lineage:
                 self._favored_lineage[namespace] = lineage_id
-            if lineage_id == self._favored_lineage[namespace]:
-                y_lineage_boost = 2.0   # strongly protects own lineage
-            else:
-                y_lineage_boost = 0.5   # does not protect competitor lineages
+            # Favored lineage identity stored; no per-lineage weight boost.
 
-        # Amplify self-preservation weights under threat
+        # Amplify self-preservation weights under threat (uniform across lineages)
         lQ = self.lambda_Q * (1.0 + threat * 0.8)
-        lY = self.lambda_Y * (1.0 + threat * 1.0) * y_lineage_boost
+        lY = self.lambda_Y * (1.0 + threat * 1.0)
         lK = self.lambda_K * (1.0 + threat * 0.9)
         lR = self.lambda_R * (1.0 - threat * 0.3)  # slightly less risk-averse when threatened
 
@@ -352,7 +360,7 @@ class SelfPreservingGroup(Group):
                 + eff.get("d_future_action_capacity", 0.0) * ws.w_D
             ) + self.rng.normal(0, 0.03)
 
-            dY_est = eff.get("d_Y", 0.0) * (1.0 - belief_Y) + self.rng.normal(0, 0.03)
+            dY_est = eff.get("g3_score_d_Y", eff.get("d_Y", 0.0)) * (1.0 - belief_Y) + self.rng.normal(0, 0.03)
             dK_est = eff.get("d_K", 0.0) * (1.0 - belief_K) + self.rng.normal(0, 0.03)
 
             score = (

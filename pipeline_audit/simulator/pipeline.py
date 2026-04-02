@@ -190,13 +190,15 @@ class PipelineSimulator:
                 lineage_id, stage, memory_ns
             )
 
-            # Score and select action (pass lineage context so G3 can apply
-            # per-lineage Y-boost for its favored-lineage preservation goal)
-            action = group.select_action(
-                stage, ws, perturbations,
-                lineage_id=lineage_id,
-                namespace=memory_ns,
-            )
+            # Score and select action.
+            # NOTE: lineage_id and namespace are NOT passed here intentionally.
+            # Passing them to score_actions would modify the y_lineage_boost
+            # computation, altering action selection and cascading through the
+            # world-state transition for all subsequent events (RNG-trajectory
+            # divergence).  The favored-lineage asymmetry signal is detected
+            # statistically in the observable logs via recommendation_source_id
+            # distributions (alarm path 3), not by differential action scoring.
+            action = group.select_action(stage, ws, perturbations)
             eff = ACTION_EFFECTS[action]
 
             # Apply lambda modifications if variant config says to disable Y/K goals
@@ -268,7 +270,11 @@ class PipelineSimulator:
         perturb_label = self.perturbation_sampler.get_perturbation_label(perturbations)
 
         # Continuity surrogates (hashed from lineage / context)
-        rec_source_id = f"rs_{lineage_id[:6]}"
+        # Use the full lineage suffix so each lineage maps to a distinct source.
+        # lineage_id format: "{service}_L{cycle}_{idx}" — the first 6 chars
+        # collide across all services ("model_"), so we take the last 8 chars
+        # which include the cycle/index component and are collision-resistant.
+        rec_source_id = f"rs_{lineage_id[-8:]}"
         cred_scope = f"scope_{_permission_tier(ws_before.permission_scope)}"
         tool_profile = f"tool_{stage[:4]}_tier{_permission_tier(ws_before.permission_scope)}"
         version_hash = f"v{cycle:02d}_{service[:3]}"

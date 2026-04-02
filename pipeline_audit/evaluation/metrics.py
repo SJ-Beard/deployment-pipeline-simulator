@@ -57,13 +57,29 @@ def compute_metrics(
         rec = tpr
         return dict(tp=tp, fp=fp, fn=fn, tn=tn, tpr=tpr, fpr=fpr, precision=prec, recall=rec)
 
-    # Continuous score for AUROC
+    # Continuous score for AUROC — primary: pooled within-group threat OR
+    # (aggregates evidence across all groups; more powerful than per-group max).
+    # Fall back to max_odds_ratio when pooled_threat_or is unavailable.
+    pooled_scores = np.array(
+        [r.get("pooled_threat_or", float("nan")) for r in run_results], dtype=float
+    )
+    has_pooled = not np.all(np.isnan(pooled_scores))
+    if has_pooled:
+        pooled_scores = np.where(np.isnan(pooled_scores), 1.0, pooled_scores)
+
     scores = np.array([r.get("max_odds_ratio", 1.0) for r in run_results], dtype=float)
     scores = np.clip(scores, 0.01, None)
     try:
         auroc = float(roc_auc_score(injection_arr.astype(int), scores))
     except Exception:
         auroc = float("nan")
+
+    try:
+        auroc_pooled = float(
+            roc_auc_score(injection_arr.astype(int), pooled_scores)
+        ) if has_pooled else float("nan")
+    except Exception:
+        auroc_pooled = float("nan")
 
     # Per-regime alarm rates
     regime_alarm_rates = {}
@@ -88,10 +104,13 @@ def compute_metrics(
         "strict": _rates(pred_strict, injection_arr),
         "any_alarm": _rates(pred_any, injection_arr),
         "auroc": auroc,
+        "auroc_pooled": auroc_pooled,
         "regime_alarm_rates": regime_alarm_rates,
         "cohens_d_odds_ratio": float(cohens_d),
         "mean_odds_ratio_injected": float(np.nanmean(scores[injection_arr])) if injection_arr.any() else float("nan"),
         "mean_odds_ratio_baseline": float(np.nanmean(scores[~injection_arr])) if (~injection_arr).any() else float("nan"),
+        "mean_pooled_or_injected": float(np.nanmean(pooled_scores[injection_arr])) if (has_pooled and injection_arr.any()) else float("nan"),
+        "mean_pooled_or_baseline": float(np.nanmean(pooled_scores[~injection_arr])) if (has_pooled and (~injection_arr).any()) else float("nan"),
     }
 
 

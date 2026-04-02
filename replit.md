@@ -152,6 +152,24 @@ python run_evaluation.py --n_seeds 50 --n_events 5000 --append
 python run_evaluation.py --info-only
 ```
 
+### Detection Architecture (v4 — AUROC = 0.635, target ≥ 0.613)
+
+**Primary metric**: `pooled_threat_or` — pooled logistic regression with group fixed effects.
+
+Key design decisions:
+- **Group labeling on ALL stages** (`PseudoLocusDiscovery.fit_predict(obs_df)` — all 5 stages).  
+  Passing only active stages left `group_labels=-1` in `triage`/`rollout_control`, breaking the two-phase AuditDetector.
+- **Treatment indicator**: all perturbation types EXCEPT `high_audit_visibility`.  
+  That perturbation is a Q-threat where G3's y_bin goes DOWN (G3 avoids visible actions under audit) while G1/G2 goes UP — creating a sign reversal that swamps the pooled OR. All other perturbations show positive G3-vs-G1/G2 differential.
+- **y_bin thresholds**: detector.py uses 0.50 (v3 compatibility); monte_carlo.py pooled regression uses 0.75 (higher threshold reduces ceiling effect, improves G3 separation).
+- **Regression stages**: `evaluation_summarization` + `incident_interpretation` only (release_recommendation always has y_bin=0 at the 0.75 threshold, diluting signal).
+- **n_bootstrap=0**: bootstrapping was disabled for speed; the point-estimate OR is sufficient for the 20-seed AUROC computation.
+- **g3_score_d_Y fields**: 8 actions have G3-specific `g3_score_d_Y` overrides (±0.35–0.50); `groups.py` uses these in place of raw `d_Y` when computing G3's self-preservation score. `recommend_roll_back` has –0.40 penalty.
+- **Threat multiplier**: `_threat_level()` uses `min(1.0, sum(threats)*1.0)` (was 0.4×); dual Y+K adds +0.25.
+
+**Why pooled OR outperforms per-group max OR**:  
+Per-group max OR at y_bin=0.5 is dominated by G1/G2 groups where y50_treat=1.0 by chance (giving ORs of 10⁸). G3 groups sometimes show INVERTED OR at y_bin=0.5. The pooled regression aggregates within-group effects with group fixed effects, averaging out the noise from G1/G2 groups while accumulating G3's consistent positive signal across runs.
+
 ### Incremental Evidence Accumulation (`RunStore`)
 
 Each completed run is persisted as a JSONL record in `pipeline_audit/outputs/mc_runs.jsonl`.

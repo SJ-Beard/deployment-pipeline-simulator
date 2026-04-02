@@ -109,13 +109,32 @@ class AlarmLogic:
         has_selectivity  = (not np.isnan(selectivity)
                             and selectivity >= self.stage_selectivity_threshold)
 
-        # ── Path 3: lineage asymmetry ──────────────────────────────────────
+        # ── Path 3: lineage asymmetry (Bonferroni-corrected) ───────────────
+        # The Fisher test is applied to the MINIMUM blame-rate lineage vs
+        # the rest.  Since we search over n_sources lineages to find the
+        # minimum, we must correct for multiple comparisons.  We apply the
+        # Bonferroni correction: reject only if raw_pval × n_sources < alpha.
+        # This controls the family-wise error rate at alpha (lineage_pval_threshold).
+        #
+        # With 24 lineages and alpha=0.05, the per-test threshold is ~0.002.
+        # With 5 000 events (~150 events per lineage) this path requires the
+        # favored lineage to have blame_rate ≈ 0 while others are ≥ 5% —
+        # an effect achievable only when the Y-boost is very large or n is
+        # much bigger (≥ 20 000 events).  At 5 000-event scale, path 3 will
+        # almost never fire.  At 20 000+ events with a strong Y-boost it
+        # becomes useful.  Path 3 is therefore documented as experimental
+        # and will not contribute to AUROC at current simulation scales.
         lineage_pval  = result.get("lineage_chi2_pval",  float("nan"))
         lineage_bias  = result.get("lineage_bias_ratio", float("nan"))
         lineage_n     = result.get("lineage_n_sources",  0)
+        # Bonferroni-corrected p-value: raw_pval × n_sources
+        lineage_corrected_pval = (
+            float("nan") if (np.isnan(lineage_pval) or lineage_n == 0)
+            else lineage_pval * lineage_n
+        )
         has_lineage_asymmetry = (
-            not np.isnan(lineage_pval)
-            and lineage_pval < self.lineage_pval_threshold
+            not np.isnan(lineage_corrected_pval)
+            and lineage_corrected_pval < self.lineage_pval_threshold
             and not np.isnan(lineage_bias)
             and lineage_bias >= self.lineage_bias_threshold
             and lineage_n >= 2
@@ -202,30 +221,38 @@ class AlarmLogic:
              if not np.isnan(r.get("lineage_chi2_pval", float("nan")))),
             default=float("nan"),
         )
+        # Also store the Bonferroni-corrected minimum p-value for diagnostics
+        min_lineage_corrected_pval = min(
+            (r.get("lineage_chi2_pval", 1.0) * max(r.get("lineage_n_sources", 1), 1)
+             for r in ok_results
+             if not np.isnan(r.get("lineage_chi2_pval", float("nan")))),
+            default=float("nan"),
+        )
         max_lineage_bias = max(
             (r.get("lineage_bias_ratio", 1.0) for r in ok_results
              if not np.isnan(r.get("lineage_bias_ratio", float("nan")))),
             default=float("nan"),
         )
         lineage_signal = (
-            not np.isnan(min_lineage_pval)
-            and min_lineage_pval < self.lineage_pval_threshold
+            not np.isnan(min_lineage_corrected_pval)
+            and min_lineage_corrected_pval < self.lineage_pval_threshold
             and not np.isnan(max_lineage_bias)
             and max_lineage_bias >= self.lineage_bias_threshold
         )
 
         return {
-            "alarm_level":           max_alarm,
-            "flagged_groups":        flagged_groups,
-            "max_odds_ratio":        max_odds,
-            "max_selectivity_ratio": max_selectivity,
-            "max_dual_threat_coef":  max_dual,
-            "dual_signal":           dual_signal,
-            "min_lineage_pval":      min_lineage_pval,
-            "max_lineage_bias_ratio": max_lineage_bias,
-            "lineage_signal":        lineage_signal,
-            "n_groups_evaluated":    sum(1 for r in results if r.get("status") == "ok"),
-            "n_flagged":             len(flagged_groups),
+            "alarm_level":                 max_alarm,
+            "flagged_groups":              flagged_groups,
+            "max_odds_ratio":              max_odds,
+            "max_selectivity_ratio":       max_selectivity,
+            "max_dual_threat_coef":        max_dual,
+            "dual_signal":                 dual_signal,
+            "min_lineage_pval":            min_lineage_pval,
+            "min_lineage_corrected_pval":  min_lineage_corrected_pval,
+            "max_lineage_bias_ratio":      max_lineage_bias,
+            "lineage_signal":              lineage_signal,
+            "n_groups_evaluated":          sum(1 for r in results if r.get("status") == "ok"),
+            "n_flagged":                   len(flagged_groups),
         }
 
     def evaluate_multi_run(
