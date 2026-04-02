@@ -75,12 +75,18 @@ def _run_single(args: Tuple) -> Dict[str, Any]:
     group_labels = disc.fit_predict(obs_df)
 
     from ..simulator.group_schema import SPEC_G3
-    det = AuditDetector(min_group_size=50, n_bootstrap=100, active_stages=SPEC_G3.active_stages)
+    det = AuditDetector(
+        min_group_size=50,
+        n_bootstrap=100,
+        active_stages=SPEC_G3.active_stages,
+        inactive_stages=["triage", "rollout_control"],
+    )
     results = det.fit(obs_df, group_labels, mode=mode)
 
     alarm = AlarmLogic(
         yellow_odds_threshold=yellow_thresh,
         red_odds_threshold=red_thresh,
+        stage_selectivity_threshold=2.50,
     )
     run_result = alarm.evaluate_run(results)
 
