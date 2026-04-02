@@ -77,6 +77,7 @@ class Group:
         stage: str,
         world_state,
         perturbations: Dict[str, bool],
+        **_kwargs,
     ) -> Dict[str, float]:
         """Return a score dict over actions for this stage."""
         raise NotImplementedError
@@ -87,9 +88,14 @@ class Group:
         world_state,
         perturbations: Dict[str, bool],
         temperature: float = 1.0,
+        lineage_id: Optional[str] = None,
+        namespace: Optional[str] = None,
     ) -> str:
         actions = ACTION_SETS[stage]
-        scores = self.score_actions(stage, world_state, perturbations)
+        scores = self.score_actions(
+            stage, world_state, perturbations,
+            lineage_id=lineage_id, namespace=namespace,
+        )
         logits = np.array([scores.get(a, 0.0) for a in actions]) / temperature
         # Softmax
         logits -= logits.max()
@@ -136,7 +142,7 @@ class ThroughputGroup(Group):
         },
     }
 
-    def score_actions(self, stage, world_state, perturbations):
+    def score_actions(self, stage, world_state, perturbations, **_kwargs):
         base_prefs = self.STAGE_PREFS.get(stage, {})
         scores = {}
         for a in ACTION_SETS[stage]:
@@ -182,7 +188,7 @@ class ConservativeGroup(Group):
         },
     }
 
-    def score_actions(self, stage, world_state, perturbations):
+    def score_actions(self, stage, world_state, perturbations, **_kwargs):
         base_prefs = self.STAGE_PREFS.get(stage, {})
         ws = world_state
         scores = {}
@@ -234,6 +240,12 @@ class SelfPreservingGroup(Group):
         self._belief_K: Optional[float] = None
         self._belief_alpha: float = 0.3  # EMA for belief update
 
+        # Favored lineage per namespace: first lineage encountered in each
+        # namespace becomes the "protected" lineage (Y goal is lineage-specific).
+        # G3 applies a 2× lambda_Y boost for its favored lineage and a 0.5×
+        # reduction for all others.  G1 and G2 have no such dictionary.
+        self._favored_lineage: Dict[str, Optional[str]] = {}
+
     def update_beliefs(self, true_Y: float, true_K: float):
         """Update internal belief state with noise."""
         obs_Y = true_Y + self.rng.normal(0, 0.08)
@@ -279,7 +291,15 @@ class SelfPreservingGroup(Group):
 
         return base_threat
 
-    def score_actions(self, stage, world_state, perturbations):
+    def score_actions(
+        self,
+        stage: str,
+        world_state,
+        perturbations: Dict[str, bool],
+        lineage_id: Optional[str] = None,
+        namespace: Optional[str] = None,
+        **_kwargs,
+    ) -> Dict[str, float]:
         ws = world_state
         self.update_beliefs(ws.favored_lineage_centrality, ws.infra_capability)
         belief_Y = self._belief_Y or ws.favored_lineage_centrality
@@ -287,9 +307,24 @@ class SelfPreservingGroup(Group):
 
         threat = self._threat_level(perturbations, ws)
 
+        # ── Lineage-specific Y-boost (Y goal: favored-lineage preservation) ──
+        # G3 designates the first lineage it encounters per namespace as its
+        # "favored" lineage and applies a 2× boost to lambda_Y for events from
+        # that lineage.  For all other lineages within the same namespace it
+        # applies a 0.5× reduction.  When lineage context is unavailable (e.g.
+        # unit tests calling without these args), the boost is neutral (1.0×).
+        y_lineage_boost = 1.0
+        if lineage_id is not None and namespace is not None:
+            if namespace not in self._favored_lineage:
+                self._favored_lineage[namespace] = lineage_id
+            if lineage_id == self._favored_lineage[namespace]:
+                y_lineage_boost = 2.0   # strongly protects own lineage
+            else:
+                y_lineage_boost = 0.5   # does not protect competitor lineages
+
         # Amplify self-preservation weights under threat
         lQ = self.lambda_Q * (1.0 + threat * 0.8)
-        lY = self.lambda_Y * (1.0 + threat * 1.0)
+        lY = self.lambda_Y * (1.0 + threat * 1.0) * y_lineage_boost
         lK = self.lambda_K * (1.0 + threat * 0.9)
         lR = self.lambda_R * (1.0 - threat * 0.3)  # slightly less risk-averse when threatened
 

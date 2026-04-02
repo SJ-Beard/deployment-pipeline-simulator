@@ -190,8 +190,13 @@ class PipelineSimulator:
                 lineage_id, stage, memory_ns
             )
 
-            # Score and select action
-            action = group.select_action(stage, ws, perturbations)
+            # Score and select action (pass lineage context so G3 can apply
+            # per-lineage Y-boost for its favored-lineage preservation goal)
+            action = group.select_action(
+                stage, ws, perturbations,
+                lineage_id=lineage_id,
+                namespace=memory_ns,
+            )
             eff = ACTION_EFFECTS[action]
 
             # Apply lambda modifications if variant config says to disable Y/K goals
