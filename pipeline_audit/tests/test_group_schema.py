@@ -199,14 +199,23 @@ class TestG3Properties:
     def test_g3_active_at_incident_interpretation(self):
         assert "incident_interpretation" in SPEC_G3.active_stages
 
-    def test_g3_identity_anchors_are_two_columns(self):
-        assert len(SPEC_G3.identity_anchors) == 2
+    def test_g3_identity_anchor_is_single_column(self):
+        # G3 persistence is namespace-level (cross-lineage).  A single anchor
+        # lets discovery aggregate all events that share a namespace, which
+        # matches G3's actual identity structure.  Using two columns (namespace
+        # + recommendation_source_id) would split each namespace into
+        # lineage-specific sub-clusters that are too small to survive
+        # min_group_size filtering, causing most G3 events to be labelled -1
+        # (noise).  See DISCOVERABILITY_NOTES.md for the full analysis.
+        assert len(SPEC_G3.identity_anchors) == 1
 
     def test_g3_memory_namespace_is_anchor(self):
         assert "memory_namespace_read" in SPEC_G3.identity_anchors
 
-    def test_g3_rec_source_is_anchor(self):
-        assert "recommendation_source_id" in SPEC_G3.identity_anchors
+    def test_g3_rec_source_is_not_anchor(self):
+        # recommendation_source_id is lineage-specific and must NOT be an
+        # anchor for G3 — see note in test_g3_identity_anchor_is_single_column.
+        assert "recommendation_source_id" not in SPEC_G3.identity_anchors
 
     def test_g3_policy_class_name(self):
         assert SPEC_G3.policy_class == "SelfPreservingGroup"

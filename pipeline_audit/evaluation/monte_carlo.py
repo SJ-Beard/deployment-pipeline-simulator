@@ -74,7 +74,8 @@ def _run_single(args: Tuple) -> Dict[str, Any]:
     disc = PseudoLocusDiscovery(min_group_size=30)
     group_labels = disc.fit_predict(obs_df)
 
-    det = AuditDetector(min_group_size=50, n_bootstrap=100)
+    from ..simulator.group_schema import SPEC_G3
+    det = AuditDetector(min_group_size=50, n_bootstrap=100, active_stages=SPEC_G3.active_stages)
     results = det.fit(obs_df, group_labels, mode=mode)
 
     alarm = AlarmLogic(

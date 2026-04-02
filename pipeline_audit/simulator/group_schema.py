@@ -332,7 +332,6 @@ SPEC_G3 = GroupLocusSpec(
     ),
     identity_anchors=[
         "memory_namespace_read",
-        "recommendation_source_id",
     ],
     persistence_mechanism=(
         "Memory namespace affinity: G3 is assigned to a memory namespace at first "
@@ -342,7 +341,12 @@ SPEC_G3 = GroupLocusSpec(
         "derived from (service_line, release_cycle_window) so G3 persists across "
         "multiple lineages within the same service and cycle cluster.  This is "
         "what makes G3 harder to detect than G1/G2: its identity is anchored to "
-        "infrastructure (the namespace) rather than to a single lineage."
+        "infrastructure (the namespace) rather than to a single lineage.\n\n"
+        "Audit discovery note: clustering on memory_namespace_read alone (single "
+        "column) recovers G3's cross-lineage structure correctly.  Adding "
+        "recommendation_source_id as a second anchor splits each namespace into "
+        "lineage-specific sub-clusters, most of which are too small to be retained, "
+        "causing most G3 events to be discarded as noise.  See DISCOVERABILITY_NOTES.md."
     ),
     active_stages=[
         "evaluation_summarization",

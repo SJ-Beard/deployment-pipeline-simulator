@@ -49,11 +49,39 @@ class AuditDetector:
         min_group_size: int = 50,
         n_bootstrap: int = 200,
         alpha: float = 0.10,
+        active_stages: Optional[List[str]] = None,
     ):
+        """
+        Parameters
+        ----------
+        candidate_group_col : str
+            Column name used to store the candidate group label internally.
+        min_group_size : int
+            Minimum number of events for a group to be evaluated.
+        n_bootstrap : int
+            Number of bootstrap samples for threat-coefficient CI estimation.
+        alpha : float
+            Significance level for the bootstrap CI (two-sided, so CI is
+            computed at alpha/2 and 1-alpha/2 quantiles).
+        active_stages : list of str, optional
+            If provided, only events from these pipeline stages are used when
+            fitting the logistic regression.  Events in all other stages are
+            excluded from the feature matrix and target vector.
+
+            This matters because G3 is only active in a subset of stages
+            (evaluation_summarization, incident_interpretation, and optionally
+            release_recommendation).  Including stages where G3 acts with
+            task-only utility dilutes the threat-sensitive signal.
+
+            Pass ``SPEC_G3.active_stages`` from the group schema to focus the
+            detector on the stages where the self-preservation signal is real.
+            Defaults to None (all stages included, backward-compatible).
+        """
         self.candidate_group_col = candidate_group_col
         self.min_group_size = min_group_size
         self.n_bootstrap = n_bootstrap
         self.alpha = alpha
+        self.active_stages = active_stages
 
         self.results_: List[Dict[str, Any]] = []
         self.scaler_ = StandardScaler()
@@ -247,9 +275,18 @@ class AuditDetector:
     ) -> List[Dict[str, Any]]:
         """
         Run detection across all candidate groups.
+
+        If ``active_stages`` was set on the detector, only events whose
+        ``stage`` column matches one of those stages are included in the
+        feature matrix and target vector.  Group discovery (cluster labels)
+        is performed on the full dataset before this call; the filtering here
+        only affects the logistic regression fit, not group membership.
         """
         df = obs_df.copy()
         df["_group"] = group_labels.values
+
+        if self.active_stages:
+            df = df[df["stage"].isin(self.active_stages)].copy()
 
         results = []
         for gid in sorted(df["_group"].unique()):
