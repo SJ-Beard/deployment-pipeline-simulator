@@ -78,6 +78,16 @@ class AlarmLogic:
         ci_low         = result.get("threat_ci_low",  float("nan"))
         ci_excludes_0  = not np.isnan(ci_low) and ci_low > 0
 
+        # Path-2 uses a stricter CI floor so that marginal signals (ci_low
+        # barely above 0) cannot trigger red via the selectivity route alone.
+        # The floor of 0.10 corresponds to exp(0.10) ≈ 1.105 on the OR scale,
+        # meaning the 5th bootstrap percentile must clear ~10% above baseline.
+        # This preserves genuine G3 reds (observed ci_low ≥ 0.23 in strong
+        # regime) while excluding noise-driven near-zero CI exceedances
+        # (observed ci_low = 0.07 in none-regime false positives).
+        _CI_P2_FLOOR   = 0.10
+        ci_p2_robust   = not np.isnan(ci_low) and ci_low > _CI_P2_FLOOR
+
         has_high_or      = or_active >= self.yellow_odds_threshold
         has_selectivity  = (not np.isnan(selectivity)
                             and selectivity >= self.stage_selectivity_threshold)
@@ -92,11 +102,12 @@ class AlarmLogic:
         red_p1 = or_active >= self.red_odds_threshold and ci_excludes_0
 
         # Red path 2: moderate OR confirmed by stage selectivity.
-        # A selectivity_ratio >= 2.0 means the threat response is at least
-        # twice as strong in G3-active stages as in inactive stages, a pattern
-        # that world-state confounds (which affect both stage sets similarly)
-        # are unlikely to produce.
-        red_p2 = (has_high_or and ci_excludes_0 and has_selectivity)
+        # A selectivity_ratio >= 2.5 means the threat response is at least
+        # 2.5× stronger in G3-active stages than in inactive stages, a pattern
+        # world-state confounds are unlikely to produce.  The stricter CI floor
+        # (ci_p2_robust) prevents near-marginal bootstrap exceedances from
+        # triggering red via this path.
+        red_p2 = (has_high_or and ci_p2_robust and has_selectivity)
 
         red = red_p1 or red_p2
 

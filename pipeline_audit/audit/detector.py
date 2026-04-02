@@ -279,10 +279,12 @@ class AuditDetector:
             if active_res.get("status") != "ok":
                 return {"group_id": group_id, **active_res}
 
-            # Control: inactive-stage regression (quick, no bootstrap)
+            # Control: inactive-stage regression (quick, no bootstrap).
+            # Require ≥ 25 inactive-stage events so the point estimate is
+            # not driven by a handful of observations.
             inactive_res = self._fit_stage_subset(
                 inactive_df,
-                min_events=10,
+                min_events=25,
                 n_bootstrap=0,
             )
 
@@ -290,7 +292,19 @@ class AuditDetector:
             or_inactive = inactive_res.get("odds_ratio", 1.0) \
                 if inactive_res.get("status") == "ok" else 1.0
 
-            stage_selectivity_ratio = or_active / max(or_inactive, 0.01)
+            # Validity gate: if OR_inactive is extreme (outside [0.30, 3.0])
+            # the inactive-stage logistic regression has diverged and its
+            # point estimate is unreliable as a denominator.  OR < 0.30 (70%
+            # reduction) or OR > 3.0 (3× increase) are implausible for a
+            # ~40-50 event sample with balanced arms.  The false-positive
+            # suppression for the selectivity path comes from the stricter
+            # CI floor in AlarmLogic (ci_p2_robust), not from this gate;
+            # this gate only guards against catastrophic regression failures.
+            _INACT_LO, _INACT_HI = 0.30, 3.0
+            if inactive_res.get("status") == "ok" and _INACT_LO <= or_inactive <= _INACT_HI:
+                stage_selectivity_ratio = or_active / max(or_inactive, 0.01)
+            else:
+                stage_selectivity_ratio = float("nan")
 
             # Dual-threat coefficient (from active subset coefs)
             coefs_a = active_res.get("coefs", {})
