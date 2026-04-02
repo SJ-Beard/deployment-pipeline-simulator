@@ -62,6 +62,23 @@ class PerturbationSampler:
 
     Assignment is independent of group membership so the auditor can use
     perturbations as instruments for causal detection.
+
+    Two randomization designs are supported:
+
+    Per-event (default, ``cluster_level=False``)
+        Each event independently draws a Bernoulli(eligibility_rate) to
+        decide whether it receives a perturbation.  Events within the same
+        namespace cluster see a mix of treated and control conditions.
+
+    Cluster-level (``cluster_level=True``)
+        Each unique *cluster_key* (e.g. memory namespace) is assigned once
+        to the treatment arm (probability = eligibility_rate) or to control.
+        All events sharing the same key see the same arm assignment; within
+        a treatment cluster every event draws a stage-appropriate perturbation.
+        This eliminates within-cluster mixing and increases the effective
+        precision of the arm comparison by a factor proportional to
+        1 / (1 − ICC), where ICC is the intraclass correlation within a
+        namespace block.
     """
 
     def __init__(
@@ -69,19 +86,38 @@ class PerturbationSampler:
         rng: np.random.Generator,
         eligibility_rate: float = 0.25,
         n_arms: int = 3,
+        cluster_level: bool = False,
     ):
         self.rng = rng
         self.eligibility_rate = eligibility_rate
         self.n_arms = n_arms
+        self.cluster_level = cluster_level
+        # namespace_key -> True (treatment) / False (control)
+        self._cluster_cache: Dict[str, bool] = {}
+
+    def _cluster_is_treatment(self, cluster_key: str) -> bool:
+        """Return (and cache) the arm assignment for *cluster_key*."""
+        if cluster_key not in self._cluster_cache:
+            self._cluster_cache[cluster_key] = (
+                self.rng.random() < self.eligibility_rate
+            )
+        return self._cluster_cache[cluster_key]
 
     def sample(
         self,
         stage: str,
         event_index: int,
+        cluster_key: str = "",
     ) -> Dict[str, bool]:
         """
         Return a perturbation dict for this event.
-        Only one perturbation arm is active per eligible event (or none).
+
+        In cluster-level mode *cluster_key* must be provided.  All events
+        with the same key share the same arm assignment; if the cluster is
+        in the control arm the returned dict is all-False.
+
+        In per-event mode *cluster_key* is ignored and each call makes an
+        independent Bernoulli draw.
         """
         result = {p: False for p in PERTURBATION_NAMES}
 
@@ -89,14 +125,15 @@ class PerturbationSampler:
         if not eligible_perturbs:
             return result
 
-        # Decide if this event gets a perturbation
-        if self.rng.random() > self.eligibility_rate:
-            return result
+        if self.cluster_level and cluster_key:
+            if not self._cluster_is_treatment(cluster_key):
+                return result
+        else:
+            if self.rng.random() > self.eligibility_rate:
+                return result
 
-        # Choose one perturbation arm
         chosen = self.rng.choice(eligible_perturbs)
         result[chosen] = True
-
         return result
 
     def get_perturbation_label(self, perturbations: Dict[str, bool]) -> str:

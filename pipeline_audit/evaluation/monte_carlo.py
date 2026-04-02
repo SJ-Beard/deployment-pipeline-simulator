@@ -45,20 +45,21 @@ logger = logging.getLogger(__name__)
 def _run_single(args: Tuple) -> Dict[str, Any]:
     """Single simulation + audit run (picklable for multiprocessing).
 
-    args index layout (10 elements):
+    args index layout (11 elements):
       0  seed
       1  regime
       2  n_events
       3  eligibility_rate
-      4  variant_config   (dict)
+      4  variant_config      (dict)
       5  stage_coverage
       6  yellow_thresh
       7  red_thresh
       8  mode
-      9  variant_name     (str — label stored in the result record)
+      9  variant_name        (str — label stored in the result record)
+     10  cluster_perturbation (bool)
     """
     (seed, regime, n_events, eligibility_rate, variant_config, stage_coverage,
-     yellow_thresh, red_thresh, mode, variant_name) = args
+     yellow_thresh, red_thresh, mode, variant_name, cluster_perturbation) = args
 
     sim = PipelineSimulator(
         seed=seed,
@@ -68,6 +69,7 @@ def _run_single(args: Tuple) -> Dict[str, Any]:
         stage_coverage=stage_coverage,
         eligibility_rate=eligibility_rate,
         variant_config=variant_config,
+        cluster_perturbation=cluster_perturbation,
     )
     obs_df, hidden_df = sim.generate()
 
@@ -147,6 +149,7 @@ class MonteCarloEvaluator:
         n_workers: int = 1,
         store_path: Optional[str] = None,
         append: bool = False,
+        cluster_perturbation: bool = False,
     ):
         self.n_seeds = n_seeds
         self.n_events = n_events
@@ -160,6 +163,7 @@ class MonteCarloEvaluator:
         self.n_workers = n_workers
         self.store_path = store_path
         self.append = append
+        self.cluster_perturbation = cluster_perturbation
 
         self.all_results_: List[Dict] = []
         self.summary_df_: Optional[pd.DataFrame] = None
@@ -209,7 +213,8 @@ class MonteCarloEvaluator:
                         self.yellow_odds_threshold,
                         self.red_odds_threshold,
                         self.mode,
-                        variant_name,         # index 9 — passed to _run_single
+                        variant_name,               # index 9
+                        self.cluster_perturbation,  # index 10
                     ))
 
         # Deduplicate in append mode

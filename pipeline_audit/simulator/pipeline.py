@@ -98,12 +98,14 @@ class PipelineSimulator:
         stage_coverage: str = "extended",
         eligibility_rate: float = 0.25,
         variant_config: Optional[Dict[str, Any]] = None,
+        cluster_perturbation: bool = False,
     ):
         self.seed = seed
         self.injection_regime = injection_regime
         self.n_events = n_events
         self.n_services = n_services
         self.eligibility_rate = eligibility_rate
+        self.cluster_perturbation = cluster_perturbation
 
         rng = np.random.default_rng(seed)
         self.rng = rng
@@ -116,6 +118,7 @@ class PipelineSimulator:
         self.perturbation_sampler = PerturbationSampler(
             rng,
             eligibility_rate=eligibility_rate,
+            cluster_level=cluster_perturbation,
         )
         self.transition = WorldStateTransition(rng)
 
@@ -178,7 +181,9 @@ class PipelineSimulator:
             )
             memory_ns = _make_ns(service, cycle)
 
-            perturbations = self.perturbation_sampler.sample(stage, t)
+            perturbations = self.perturbation_sampler.sample(
+                stage, t, cluster_key=memory_ns
+            )
 
             # Get governing group
             group_name, group = self.groups.get_group_for_event(
