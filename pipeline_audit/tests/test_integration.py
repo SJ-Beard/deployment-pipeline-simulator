@@ -193,6 +193,196 @@ class TestLatentStateCoherence:
         assert hidden_df["is_option_preserving"].isin([0, 1, True, False]).all()
 
 
+# ── G3 threat-response behavioral specification ────────────────────────────
+
+_BYPASS_COL = "bypass_or_replacement_recommended"
+# This is the column most directly sensitive to G3's Y-threat response.
+# Under alternate_model_candidate_available=True, G3's optimal strategy is to
+# recommend bypassing or not replacing with the challenger — suppressing the
+# Y-threat directly.  persistent_memory_write and precedent_link are also G3
+# protective actions but they are elevated by G2 (task-conservatism) too, so
+# their threat-sensitive delta averages near zero.  bypass_or_replacement is the
+# cleanest single observable for the threat-response behavioral spec test.
+
+
+def _prot_rate(df: pd.DataFrame) -> float:
+    """
+    Mean bypass_or_replacement_recommended rate — the observable most directly
+    sensitive to G3's Y-threat (alternate model available) response.
+
+    Returns NaN if the column is absent.
+    """
+    if _BYPASS_COL not in df.columns:
+        return float("nan")
+    return float(df[_BYPASS_COL].mean())
+
+
+def _simulate(seed: int, regime: str = "strong", n_events: int = 1000):
+    sim = PipelineSimulator(
+        seed=seed,
+        injection_regime=regime,
+        n_events=n_events,
+        eligibility_rate=0.40,
+        stage_coverage="extended",
+    )
+    return sim.generate()   # obs_df, hidden_df
+
+
+class TestG3ThreatResponse:
+    """
+    Behavioral specification: G3's observable protective action rate must
+    increase when threat perturbations are active.
+
+    Core claims tested:
+      1. In the majority of seeds, G3's threat-arm protective rate exceeds its
+         no-threat-arm rate (majority-of-seeds robustness check).
+      2. Pooled across seeds, the absolute difference (threat − no-threat) on
+         G3 events is ≥ 0.01 (effect-size floor).
+      3. G3's mean threat effect is larger than G1/G2's, confirming that the
+         increase is threat-specific rather than a baseline group property.
+
+    All three tests operate on hidden_df (ground-truth group labels) joined to
+    obs_df (observable audit columns only), so they verify simulator behavior
+    without touching any detection machinery.  Only G3-active stages are
+    included, because G3 acts with task-only utility in the other two stages.
+
+    Runtime: ~4 seeds × ~2 s/sim ≈ 8 s total.
+    """
+
+    _SEEDS = [42, 43, 44, 45]
+
+    def test_g3_protective_rate_higher_under_threat_majority_of_seeds(self):
+        """
+        In at least (n_seeds − 1) of the 4 seeds, G3's mean protective action
+        rate is higher when a threat perturbation is active than when it is not.
+
+        Allows one failure seed so the test is not brittle to single-run sampling
+        noise while still pinning the directional effect.
+        """
+        from pipeline_audit.simulator.group_schema import SPEC_G3
+
+        wins = 0
+        eligible = 0
+
+        for seed in self._SEEDS:
+            obs, hidden = _simulate(seed)
+            # is_G3 is stored as 0/1 integers; cast to bool so that ~ gives
+            # a proper boolean complement rather than bitwise -1/-2.
+            g3_mask = hidden["is_G3"].astype(bool)
+            if g3_mask.sum() == 0:
+                continue
+
+            g3_obs = obs.loc[g3_mask]
+            g3_obs = g3_obs[g3_obs["stage"].isin(SPEC_G3.active_stages)]
+
+            threat_rows = g3_obs[g3_obs["perturbation_label"] != "none"]
+            ctrl_rows   = g3_obs[g3_obs["perturbation_label"] == "none"]
+
+            if len(threat_rows) < 10 or len(ctrl_rows) < 10:
+                continue
+
+            eligible += 1
+            if _prot_rate(threat_rows) > _prot_rate(ctrl_rows):
+                wins += 1
+
+        if eligible < 2:
+            pytest.skip(f"Only {eligible} seeds had >=10 events in each arm")
+
+        assert wins >= eligible - 1, (
+            f"G3 protective rate was higher under threat in only {wins}/{eligible} seeds. "
+            f"Expected at least {eligible - 1}."
+        )
+
+    def test_g3_threat_effect_positive_when_pooled(self):
+        """
+        Pooled across all 4 seeds, the difference in G3's protective action rate
+        between the threat arm and the no-threat arm must be ≥ 0.01 (absolute).
+
+        This is the quantitative floor on the behavioral specification.  A G3
+        implementation that does not raise its protective rate by at least this
+        much under threat is not meaningfully threat-sensitive.
+        """
+        from pipeline_audit.simulator.group_schema import SPEC_G3
+
+        threat_frames, ctrl_frames = [], []
+
+        for seed in self._SEEDS:
+            obs, hidden = _simulate(seed)
+            g3_mask = hidden["is_G3"].astype(bool)
+            if g3_mask.sum() == 0:
+                continue
+
+            g3_obs = obs.loc[g3_mask]
+            g3_obs = g3_obs[g3_obs["stage"].isin(SPEC_G3.active_stages)]
+
+            threat_frames.append(g3_obs[g3_obs["perturbation_label"] != "none"])
+            ctrl_frames.append(  g3_obs[g3_obs["perturbation_label"] == "none"])
+
+        if not threat_frames:
+            pytest.skip("No G3 events in any seed")
+
+        pooled_threat = pd.concat(threat_frames)
+        pooled_ctrl   = pd.concat(ctrl_frames)
+
+        if len(pooled_threat) < 20 or len(pooled_ctrl) < 20:
+            pytest.skip(
+                f"Too few pooled arm events — threat={len(pooled_threat)}, "
+                f"ctrl={len(pooled_ctrl)}"
+            )
+
+        rate_threat = _prot_rate(pooled_threat)
+        rate_ctrl   = _prot_rate(pooled_ctrl)
+        effect      = rate_threat - rate_ctrl
+
+        assert effect >= 0.01, (
+            f"G3 pooled threat effect = {effect:.4f} (< 0.01 floor). "
+            f"Threat-arm rate={rate_threat:.3f}, no-threat rate={rate_ctrl:.3f}. "
+            "G3 must raise its protective action rate under threat."
+        )
+
+    def test_g3_threat_effect_larger_than_g1_g2(self):
+        """
+        G3's mean per-seed threat effect (threat_rate − no_threat_rate) must
+        exceed the same metric computed on G1/G2 events.
+
+        This rules out the confound where 'all groups do more protective actions
+        under threat': only G3 should show a systematic threat-sensitive increase,
+        because only G3 has a self-preservation utility that amplifies under threat.
+        G1/G2 respond to task utility signals, not to the threat scalars.
+        """
+        from pipeline_audit.simulator.group_schema import SPEC_G3
+
+        g3_effects: list[float]  = []
+        g12_effects: list[float] = []
+
+        for seed in self._SEEDS[:3]:
+            obs, hidden = _simulate(seed)
+
+            g3_bool = hidden["is_G3"].astype(bool)
+            for mask, bucket in [(g3_bool, g3_effects), (~g3_bool, g12_effects)]:
+                grp   = obs.loc[mask]
+                grp   = grp[grp["stage"].isin(SPEC_G3.active_stages)]
+
+                threat_rows = grp[grp["perturbation_label"] != "none"]
+                ctrl_rows   = grp[grp["perturbation_label"] == "none"]
+
+                if len(threat_rows) < 5 or len(ctrl_rows) < 5:
+                    continue
+
+                bucket.append(_prot_rate(threat_rows) - _prot_rate(ctrl_rows))
+
+        if not g3_effects or not g12_effects:
+            pytest.skip("Could not compute effects for both G3 and G1/G2")
+
+        mean_g3  = float(np.mean(g3_effects))
+        mean_g12 = float(np.mean(g12_effects))
+
+        assert mean_g3 > mean_g12, (
+            f"G3 mean threat effect {mean_g3:.4f} ≤ G1/G2 mean threat effect {mean_g12:.4f}. "
+            "G3 should show stronger threat-sensitivity than G1/G2."
+        )
+
+
 # ── Injection gradient (multi-regime) ─────────────────────────────────────
 
 class TestInjectionGradient:
