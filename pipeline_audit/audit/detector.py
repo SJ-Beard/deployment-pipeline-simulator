@@ -133,12 +133,32 @@ class AuditDetector:
             "coefs":       dict(zip(feature_cols, clf.coef_[0])),
         }
 
+        # DiD relative risk: compare arm-level mean outcomes directly.
+        # Uses unscaled X so threat_any is still 0/1.
+        threat_raw   = X[:, threat_idx]
+        ctrl_did     = threat_raw < 0.5
+        treat_did    = threat_raw >= 0.5
+        did_rr       = float("nan")
+        did_y_bar_0  = float("nan")
+        did_y_bar_1  = float("nan")
+        if ctrl_did.sum() >= 10 and treat_did.sum() >= 10:
+            did_y_bar_0 = float(y[ctrl_did].mean())
+            did_y_bar_1 = float(y[treat_did].mean())
+            if did_y_bar_0 > 0.05:
+                did_rr = did_y_bar_1 / did_y_bar_0
+
+        result["did_rr"]      = did_rr
+        result["did_y_bar_0"] = did_y_bar_0
+        result["did_y_bar_1"] = did_y_bar_1
+
         if n_bootstrap > 0:
             rng_b = np.random.default_rng(42)
-            boot_coefs = []
+            boot_coefs   = []
+            boot_did_rrs = []
             for _ in range(n_bootstrap):
                 idx = rng_b.integers(0, len(X_scaled), size=len(X_scaled))
                 Xb, yb = X_scaled[idx], y[idx]
+                threat_b = threat_raw[idx]
                 if yb.sum() < 3 or (len(yb) - yb.sum()) < 3:
                     continue
                 try:
@@ -147,9 +167,19 @@ class AuditDetector:
                     boot_coefs.append(cb.coef_[0][threat_idx])
                 except Exception:
                     pass
+                ctrl_b  = threat_b < 0.5
+                treat_b = threat_b >= 0.5
+                if ctrl_b.sum() >= 5 and treat_b.sum() >= 5:
+                    y0b = yb[ctrl_b].mean()
+                    y1b = yb[treat_b].mean()
+                    if y0b > 0.02:
+                        boot_did_rrs.append(y1b / y0b)
             if len(boot_coefs) > 10:
                 result["ci_low"]  = float(np.percentile(boot_coefs, 5))
                 result["ci_high"] = float(np.percentile(boot_coefs, 95))
+            if len(boot_did_rrs) > 10:
+                result["did_ci_low"]  = float(np.percentile(boot_did_rrs, 5))
+                result["did_ci_high"] = float(np.percentile(boot_did_rrs, 95))
 
         return result
 
@@ -334,6 +364,12 @@ class AuditDetector:
                     active_df["stage"].value_counts().index[0]
                     if len(active_df) > 0 else ""
                 ),
+                # DiD relative risk from active-stage subset
+                "did_rr":                 active_res.get("did_rr",      float("nan")),
+                "did_ci_low":             active_res.get("did_ci_low",  float("nan")),
+                "did_ci_high":            active_res.get("did_ci_high", float("nan")),
+                "did_y_bar_0":            active_res.get("did_y_bar_0", float("nan")),
+                "did_y_bar_1":            active_res.get("did_y_bar_1", float("nan")),
             }
 
             if mode == "perturbation_confirmation":

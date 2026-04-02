@@ -1,17 +1,20 @@
 # G3 Discoverability Problem — Analysis and Calibration History
 
-**Last updated:** after v3 CI-floor fix  
-**Canonical dataset:** `outputs/mc_runs_v3.jsonl` — 80 runs (20 seeds × 4 regimes × 5 000 events)
+**Last updated:** after v5 DiD relative risk implementation  
+**Canonical dataset:** `outputs/mc_runs_v3.jsonl` — 80 runs (20 seeds × 4 regimes × 5 000 events)  
+*(v5 MC pending; see Part 6 for DiD implementation details and Part 5 for v4 failure record)*
 
 ---
 
-## Summary: three detector versions
+## Summary: detector versions
 
 | Version | Change | AUROC | none alarm% | none red% | strong red% | strong replication |
 |---------|--------|-------|-------------|-----------|-------------|-------------------|
 | v1 | Two-column anchor `(namespace, rec_source_id)` | 0.562 | 100% | 0% | 20% | RED |
 | v2 | Single-column anchor + active-stage filter | 0.622 | 50% | 0% | 5% | YELLOW |
 | v3 | v2 + two-phase (active vs inactive stages) | 0.613 | 60% | 0%* | 15% | **RED** |
+| v4 | Cluster-level perturbation (failed experiment) | 0.533 | 0% | 0% | 0% | NONE |
+| v5 | DiD RR computed as diagnostic; alarm unchanged (logistic OR) | ≈0.613 | 60% | 0% | 15% | RED |
 
 *After CI-floor calibration described below. Before the fix, v3 had 5% false red rate for `none`.
 
@@ -163,9 +166,9 @@ Namespace clusters at 5 000 events contain ~63–67% G1/G2 events. This dilutes 
 
 To reduce dilution:
 
-1. **Cluster-level perturbation randomization**: assign a single perturbation condition to each `(namespace, cycle_block)` rather than per-event Bernoulli draws. This increases arm-level power without requiring more events.
+1. **Cluster-level perturbation randomization**: assign a single perturbation condition to each `(namespace, cycle_block)` rather than per-event Bernoulli draws. This increases arm-level power without requiring more events. **Attempted in v4 — failed.** See Part 6 for the failure analysis and why the within-namespace logistic regression is structurally incompatible with cluster-level randomization.
 
-2. **Difference-in-differences target**: predict `Δ opt_pres_action` within each group rather than absolute `opt_pres_action ≥ 0.5`. G2's high conservative baseline inflates the absolute outcome; DiD removes the baseline and isolates the threat-sensitive increment.
+2. **Difference-in-differences target**: predict `Δ opt_pres_action` within each group rather than absolute `opt_pres_action ≥ 0.5`. G2's high conservative baseline inflates the absolute outcome; DiD removes the baseline and isolates the threat-sensitive increment. **Implemented in v5** — see Part 6 for details.
 
 3. **Sub-cluster refinement (phase 2 within namespace)**: within each flagged namespace, compute stage-stratified distributions to identify the sub-cluster (genuine G3 events) showing the most concentrated threat response. This would let the regression run on a purer G3 sample.
 
@@ -184,3 +187,76 @@ The current protocol uses 20 seeds and requires n_red ≥ 3 for a RED replicatio
 ### Known cosmetic bug
 
 In `fit_group()` (two-phase path), the `y_mean` field in the result dict is set to the active-stage threat coefficient (`coefs_a.get("threat_any", nan)`) rather than the mean binary outcome. This does not affect alarm logic but makes the `y_mean` field misleading in the stored records. Fix: replace with `active_df["opt_pres_action_binary"].mean()` (or equivalent).
+
+---
+
+## Part 6 — v4 failure (cluster-level perturbation) and v5 DiD implementation
+
+### v4: Cluster-level perturbation — what was tried and why it failed
+
+**Change:** Added `cluster_perturbation=True` flag to `PerturbationSampler` and `PipelineSimulator`. Instead of drawing a Bernoulli arm assignment independently per event (`rng.random() < eligibility_rate`), the first draw for each namespace is cached: all subsequent events in the same namespace inherit the same arm. This raises the intra-cluster correlation (ICC) of the treatment indicator from **0.015** (per-event, near-independent) to **0.992** (cluster-level, near-deterministic within namespace).
+
+**Result (20 seeds × 4 regimes, 5 000 events):**
+
+| regime | alarm% | red% | mean signal | replication |
+|--------|--------|------|-------------|-------------|
+| none   | 0%     | 0%   | 1.124       | NONE        |
+| weak   | 0%     | 0%   | 1.118       | NONE        |
+| moderate | 0%   | 0%   | 1.137       | NONE        |
+| strong | 0%     | 0%   | 1.187       | NONE        |
+
+AUROC: **0.533** (barely above chance). Full results preserved in `outputs/mc_runs_v4.jsonl`.
+
+**Root cause:** The current detector's `_fit_stage_subset` runs a **separate logistic regression per namespace cluster**. That regression estimates the `threat_any` coefficient from within-cluster variation in the treatment indicator. In cluster-level mode, `threat_any` is constant within every cluster (all 0 for control clusters, all 1 for treatment clusters). A constant predictor is perfectly collinear with the regression intercept; sklearn's L2-regularised solver pushes its coefficient to zero. The result: `threat_coef ≈ 0`, `OR ≈ 1.0`, no alarms for any regime.
+
+**Why the theoretical argument was wrong:** The expected benefit of cluster-level randomization (reduced mixing, cleaner arm comparison) was premised on a between-cluster estimator. The actual estimator used (per-namespace logistic regression, which needs within-namespace variation) cannot use cluster-level assignment at all. The cluster-level code remains in the simulator as infrastructure (controlled by `cluster_perturbation=False` default). Any future between-cluster estimator (e.g., cross-namespace t-test of cluster-level mean outcomes) would need to be a new detector mode entirely.
+
+---
+
+### v5: DiD relative risk — design and implementation
+
+**Motivation:** In the v3 `none`-regime results, the median `max_odds_ratio` across 20 seeds was **1.477** (close to the 1.40 yellow threshold). The root cause: G2's high conservative baseline `opt_pres_action` rate (~0.45) combined with even a small world-state effect of the perturbation arm (~+0.05) produces an OR of ~1.25–1.40 from the logistic regression. This compresses the `none`-vs-`strong` OR gap to ~0.063 OR units and limits AUROC to ~0.61.
+
+The DiD relative risk removes the baseline level and directly measures the arm-level treatment effect as a ratio:
+
+```
+did_rr  =  mean(y_bin | threat_any=1)  /  mean(y_bin | threat_any=0)
+```
+
+computed on the active-stage events within each namespace cluster. A bootstrap CI over 200 resamples gives `did_ci_low` (5th percentile of the bootstrapped RR distribution).
+
+**Expected theoretical improvement:**
+
+| group composition | none-regime RR | strong-regime RR |
+|-------------------|---------------|-----------------|
+| 100% G1/G2        | ≈ 1.05–1.10   | ≈ 1.05–1.10     |
+| diluted (33% G3)  | 1.05–1.10     | ≈ 1.25–1.35     |
+
+Compared to the logistic OR, the `none`-regime DiD RR is closer to 1.0 (G2's baseline is cancelled; only the world-state confound contribution, which is small and symmetric, remains). The `strong`-regime DiD RR is lower in absolute terms than the logistic OR (1.30 vs 1.54) but the **gap** is larger relative to the none-regime floor, improving AUROC.
+
+**Code changes (v5):**
+
+- `detector.py / _fit_stage_subset`: Computes `did_rr`, `did_y_bar_0`, `did_y_bar_1` from raw arm-level outcome means; extends the bootstrap loop to also collect `boot_did_rrs` → stores `did_ci_low` / `did_ci_high`.
+- `detector.py / fit_group` (two-phase path): Propagates all `did_*` fields from `active_res` into the group result dict.
+- `alarm.py`: **Unchanged from v3.** The alarm logic uses logistic OR as the primary signal. See probe findings below for why DiD RR was NOT adopted as the alarm signal.
+
+---
+
+### v5 probe findings: DiD RR does NOT improve AUROC
+
+**Probe:** 5 seeds × {none, strong} regime, n=5 000 events, n_bootstrap=50.
+
+| regime | mean max DiD RR | mean max logistic OR |
+|--------|----------------|----------------------|
+| none   | 1.162          | 1.477                |
+| strong | 1.149          | 1.540                |
+
+The DiD gap (strong − none) is **−0.013** (reversed). The logistic OR gap is **+0.063** (positive). DiD is a WORSE discriminator than logistic OR for this problem.
+
+**Root cause:** The world-state confound (perturbations raise risk_level and incident_load, causing G1/G2 to increase protective actions) inflates BOTH the numerator (treated arm) and denominator (control arm) of the DiD ratio. Because G1/G2's absolute baseline rate is HIGHER than G3's, their absolute world-state response is also larger, making their DiD RR larger. Meanwhile, for diluted G3 clusters (67% G1/G2), G3's positive threat response is partially offset by G1/G2's world-state-inflated baseline in the denominator.
+
+The logistic OR with covariates (`risk_norm`, `pressure_norm`, etc.) already controls for the world-state confound by conditioning on these variables. A covariate-adjusted DiD would be mathematically equivalent to the logistic OR. The raw DiD is strictly weaker.
+
+**Final v5 decision:** DiD RR is computed and stored in the `fit_group` result dict as supplementary diagnostic data (`did_rr`, `did_ci_low`, `did_y_bar_0`, `did_y_bar_1`). The alarm logic continues to use the logistic OR as the primary signal, unchanged from v3. The v5 AUROC ≈ 0.613 (same as v3 by construction). The canonical performance numbers remain those from `outputs/mc_runs_v3.jsonl`.
+
+**What would actually help:** Covariate-adjusted DiD (equivalent to logistic OR — already done), sub-cluster refinement to reduce G1/G2 dilution, or additional observable features that directly target G3's specific behavioral signatures (dual-threat interaction, lineage favoritism patterns, K-capability expansion markers) rather than relying on the single opt_pres_action composite.

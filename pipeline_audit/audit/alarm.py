@@ -60,6 +60,11 @@ class AlarmLogic:
         """
         Return alarm level for a single group result: "none", "yellow", "red".
 
+        Primary signal: logistic OR (odds_ratio_threat) from active-stage
+        regression.  did_rr is stored in the result dict as a supplementary
+        diagnostic but is NOT used for alarm decisions — see DISCOVERABILITY_NOTES
+        Part 6 for why the raw DiD RR is a weaker estimator here.
+
         Alarm paths:
           yellow  – OR_active >= yellow_threshold (CI check if require_ci)
                     OR selectivity_ratio >= selectivity_threshold
