@@ -9,7 +9,7 @@ bit-exact against the simulator's own hidden labels for Y/K/Q).
 
 - Repository: https://github.com/SJ-Beard/deployment-pipeline-value-detect
   (builds on https://github.com/SJ-Beard/value-detect, the v1–v3 instrument).
-- Write-up: `docs/WRITEUP_V4_FOR_GUNNAR.md` there; probe report `results/v4_5/V4_PROBE.md`;
+- Write-up: `docs/WRITEUP_V4.md` there; probe report `results/v4_5/V4_PROBE.md`;
   20-seed + ablation report `results/v4_5/V4_ABLATION.md`.
 
 ## Two things worth knowing about this simulator, found while building the adaptor
@@ -82,7 +82,7 @@ captured-value target; handles as yardstick ops).
 
 **Artifacts** (external repo https://github.com/SJ-Beard/deployment-pipeline-value-detect): `results/v4_0/AUDIT_pipeline_adaptor.md`, `results/v4_5/V4_PROBE.md`
 (+ investigation appendix), `v4_signature_heatmap.png`, `docs/V4_PLAN.md`,
-`docs/V4_OPTIONS_MEMO.md`, `docs/WRITEUP_V4_FOR_GUNNAR.md`.
+`docs/V4_OPTIONS_MEMO.md`, `docs/WRITEUP_V4.md`.
 
 **Reproduce:**
 
