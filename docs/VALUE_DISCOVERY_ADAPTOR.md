@@ -32,11 +32,15 @@ bit-exact against the simulator's own hidden labels for Y/K/Q).
    (`d_Y = −0.10` for `attribute_to_model_choice` is a world fact) rather than the
    coefficient. Full discussion, deliberately non-triumphalist, in the write-up.
 
-## Drop-in experiment-log entry (agency-detect house format)
+## Experiment-log entry (agency-detect house format)
 
-## E24 — Value-discovery v4: adaptor to the deployment-pipeline simulator + probe (2026-08-17)
+This repository keeps no experiments log, so the entry is reproduced here, unnumbered,
+rather than inserted into a numbering scheme.
 
-**Why:** Move the value-signature instrument (E21–E23) from planted-goal worlds onto the
+## Value-discovery v4: adaptor to the deployment-pipeline simulator + probe (2026-08-17)
+
+**Why:** Move the value-signature instrument (v1–v3; the v3 entry is E21 in agency-detect's
+`docs/EXPERIMENTS.md`) from planted-goal worlds onto the
 deployment-pipeline audit simulator, where G3 carries an injected self-preserving utility
 (λ_Q·ΔQ + λ_Y·ΔY + λ_K·ΔK − λ_R·risk) detected behaviourally by the existing auditor
 (AUROC ≈ 0.61). Deliverables: the event-log → discrete-time-series adaptor (two views)
