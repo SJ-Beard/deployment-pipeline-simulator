@@ -1,14 +1,18 @@
 # Structural value discovery on this simulator (external adaptor)
 
 An external line of work — *unsupervised value discovery* (SJ Beard with Claude; extends
-Gunnar Zarncke's UAD one level inward) — has an **adaptor** that runs its passive
-"value signature" instrument on this simulator's event logs. Nothing in this repository
-is modified by it: the adaptor imports `pipeline_audit` in place and records the latent
+Gunnar Zarncke's UAD one level inward) — runs its passive "value signature" instrument
+on this simulator's event logs. The **adaptor is included in this repository** as the
+[`value_detect_pipeline/`](../value_detect_pipeline/) package (see its README; tests:
+`python -m pytest value_detect_pipeline/tests -q`). Nothing else in the repository is
+touched: the adaptor imports `pipeline_audit` in place and records the latent
 `WorldState` each event was decided under by wrapping the transition step (verified
 bit-exact against the simulator's own hidden labels for Y/K/Q).
 
-- Repository: https://github.com/SJ-Beard/deployment-pipeline-value-detect
-  (builds on https://github.com/SJ-Beard/value-detect, the v1–v3 instrument).
+- Canonical home of the adaptor + the probe experiments that score its output:
+  https://github.com/SJ-Beard/deployment-pipeline-value-detect (the probe additionally
+  needs the `value_detect` instrument from https://github.com/SJ-Beard/value-detect,
+  also offered to agency-detect in a companion pull request).
 - Write-up: `docs/WRITEUP_V4.md` there; probe report `results/v4_5/V4_PROBE.md`;
   20-seed + ablation report `results/v4_5/V4_ABLATION.md`.
 
